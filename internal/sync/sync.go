@@ -113,9 +113,22 @@ func syncAdapter(ctx context.Context, db *sql.DB, name string, cfg config.Adapte
 		}
 
 	case "gogcli":
-		// Gmail adapter not yet implemented
-		result.Error = "Gmail adapter not yet implemented"
-		return result
+		// Gmail adapter via gogcli
+		accountVal, ok := cfg.Options["account"]
+		if !ok {
+			result.Error = "Gmail adapter requires 'account' in config"
+			return result
+		}
+		account, ok := accountVal.(string)
+		if !ok || account == "" {
+			result.Error = "Gmail adapter 'account' must be a string"
+			return result
+		}
+		adapter, err = adapters.NewGmailAdapter(account)
+		if err != nil {
+			result.Error = fmt.Sprintf("Failed to create adapter: %v", err)
+			return result
+		}
 
 	default:
 		result.Error = fmt.Sprintf("Unknown adapter type: %s", cfg.Type)

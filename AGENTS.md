@@ -202,6 +202,16 @@ make build
 - Convert []byte values to strings when scanning SQL results for text fields
 - Use rows.Columns() to get column names dynamically for any query
 - Text output formats results as tab-separated table with row count
+- Gmail adapter calls gogcli via exec.Command with --json flag for structured output
+- Gmail sync uses 'after:YYYY/MM/DD' query syntax for incremental sync based on watermark
+- Gmail message timestamps are in milliseconds, divide by 1000 to get Unix seconds
+- Email participant parsing handles both "Name <email>" and plain "email" formats
+- Gmail threads contain multiple messages, each message synced as separate event
+- Gmail direction determined by SENT label in message.LabelIDs array
+- Gmail body extraction recursively searches payload.Parts for text/plain or text/html
+- Email addresses stored as identities with channel='email', used for person resolution
+- Type assertions required when reading config.Options map[string]interface{}
+- exec.LookPath checks if command is available in PATH before creating adapter
 
 ## Schema Quick Reference
 
