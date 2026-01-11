@@ -159,3 +159,28 @@ Project: comms — Unified Communications Cartographer
   - When checking if insert vs update happened, query back the ID after ON CONFLICT
   - NewEveAdapter() constructor validates Eve database exists before creating adapter
   - Adapter returns SyncResult with counts: EventsCreated, EventsUpdated, PersonsCreated, Duration
+
+---
+
+## 2026-01-11 - US-007 Sync command orchestrates adapter sync
+- Created internal/sync package with SyncAll and SyncOne orchestration functions
+- Implemented `comms sync` command that runs all enabled adapters
+- Added `--adapter <name>` flag to sync specific adapter only
+- Added `--full` flag to force complete re-sync (ignores watermarks)
+- Sync operations handle errors gracefully - one adapter failing doesn't stop others
+- Results show events created/updated, persons created, and duration per adapter
+- JSON output support via --json flag for machine-readable results
+- **Files changed:**
+  - internal/sync/sync.go (new)
+  - cmd/comms/main.go (added sync command)
+  - AGENTS.md (added sync patterns)
+- **Learnings:**
+  - Sync orchestration should be separate from adapter implementations
+  - Use context.Background() for sync operations (can add timeouts later)
+  - When running multiple operations, collect results and report all at once
+  - One failing adapter shouldn't prevent others from running (graceful degradation)
+  - Switch statement in syncAdapter() maps adapter type to constructor
+  - AdapterResult struct tracks per-adapter success/failure with detailed stats
+  - Duration.String() provides human-readable time format (e.g., "2.5s", "100ms")
+  - Exit with error code if any adapter fails, but still show all results
+  - Config validation happens before sync (check adapter exists and is enabled)

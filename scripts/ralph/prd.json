@@ -103,8 +103,8 @@
         "JSON output with sync stats"
       ],
       "priority": 7,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented with internal/sync package. Supports --adapter and --full flags."
     },
     {
       "id": "US-008",

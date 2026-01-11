@@ -81,6 +81,23 @@ if jsonOutput {
 3. Add `comms connect <name>` command in main.go
 4. Store config in config.yaml via `config.Load()` and `cfg.Save()`
 5. Add status check in `checkAdapterStatus()` function
+6. Add adapter instantiation in `internal/sync/sync.go` syncAdapter() function
+
+### Running sync
+
+```bash
+# Sync all enabled adapters
+comms sync
+
+# Sync specific adapter
+comms sync --adapter imessage
+
+# Force full re-sync (ignore watermarks)
+comms sync --full
+
+# JSON output
+comms sync --json
+```
 
 ### Running tests
 
@@ -115,6 +132,9 @@ make build
 - Eve schema: contacts/contact_identifiers for people, messages/chats for events
 - Use `ON CONFLICT DO UPDATE` for upsert operations in SQLite
 - Sync watermarks enable incremental sync by tracking last_sync_at timestamp per adapter
+- Sync command orchestrates all adapters via internal/sync package
+- One adapter failing during sync doesn't stop others from running
+- Use context.Background() for sync operations (can be enhanced later with timeouts)
 
 ## Schema Quick Reference
 
