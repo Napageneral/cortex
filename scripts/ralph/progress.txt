@@ -184,3 +184,31 @@ Project: comms — Unified Communications Cartographer
   - Duration.String() provides human-readable time format (e.g., "2.5s", "100ms")
   - Exit with error code if any adapter fails, but still show all results
   - Config validation happens before sync (check adapter exists and is enabled)
+---
+
+## 2026-01-11 - US-008 Union-find identity resolution
+- Created internal/identify package with identity resolution logic
+- Implemented `comms identify` command to list all persons with identities and event counts
+- Implemented `comms identify --search <term>` for fuzzy searching by name or identifier
+- Implemented `comms identify merge <person1> <person2>` for union-find style merging
+- Implemented `comms identify add <person> --email/--phone/--identifier` to add identities
+- Merge operation transfers all identities and event_participants from person2 to person1
+- Duplicate detection prevents conflicting identity assignments
+- Cannot merge 'me' person into another person (must be the merge target)
+- All commands support JSON output via --json flag
+- **Files changed:**
+  - internal/identify/identify.go (new)
+  - cmd/comms/main.go (added identify command with merge and add subcommands)
+  - AGENTS.md (added identity resolution patterns)
+- **Learnings:**
+  - Union-find merging requires careful handling of duplicate event_participants
+  - Use `ON CONFLICT(event_id, person_id, role) DO NOTHING` when transferring event_participants
+  - Search with LIKE + LOWER() for case-insensitive fuzzy matching across names and identifiers
+  - GetPersonByName matches both canonical_name and display_name for flexibility
+  - Joining with event_participants and counting gives useful stats for merge prioritization
+  - Merge validation: check if either person is 'me' before allowing merge
+  - Custom identifiers use 'channel:identifier' format parsed with strings.SplitN
+  - List query orders by event_count DESC for most active contacts first
+  - Display event count and last_event_at timestamp to help users identify active contacts
+  - Merge is destructive - all person2 data transferred then person2 deleted
+  - Transaction pattern ensures atomicity: transfer identities, transfer participants, delete person
