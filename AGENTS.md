@@ -41,8 +41,32 @@ comms CLI
 
 1. Add cobra command in `cmd/comms/main.go`
 2. Implement logic in appropriate `internal/` package
-3. Support `--json` flag for machine output
-4. Update SKILL.md with usage
+3. Support `--json` flag for machine output (use Result structs with OK bool)
+4. Use transaction pattern for multi-step database operations
+5. Update SKILL.md with usage
+
+Example pattern for commands:
+```go
+type Result struct {
+    OK      bool   `json:"ok"`
+    Message string `json:"message,omitempty"`
+    // ... domain-specific fields
+}
+
+database, err := db.Open()
+if err != nil {
+    // handle error
+}
+defer database.Close()
+
+// Perform operations...
+
+if jsonOutput {
+    printJSON(result)
+} else {
+    fmt.Println("✓ Success message")
+}
+```
 
 ### Adding a new adapter
 
@@ -79,6 +103,10 @@ make build
 - SQLite PRAGMA foreign_keys must be enabled on each connection
 - XDG_CONFIG_HOME defaults to ~/.config, XDG_DATA_HOME defaults to ~/.local/share on Linux
 - macOS uses ~/Library/Application Support instead of XDG for data
+- Only one person can have is_me=1 in the persons table
+- Use transactions when performing multiple related database operations
+- UUIDs from google/uuid package for generating IDs
+- Always defer tx.Rollback() after beginning a transaction (safe even if committed)
 
 ## Schema Quick Reference
 
