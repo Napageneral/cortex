@@ -135,8 +135,8 @@
         "JSON output with event details"
       ],
       "priority": 9,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented with internal/query package. Supports --limit flag (default 100). Dynamic SQL building for combinable filters."
     },
     {
       "id": "US-010",

@@ -212,3 +212,33 @@ Project: comms — Unified Communications Cartographer
   - Display event count and last_event_at timestamp to help users identify active contacts
   - Merge is destructive - all person2 data transferred then person2 deleted
   - Transaction pattern ensures atomicity: transfer identities, transfer participants, delete person
+
+---
+
+## 2026-01-11 - US-009 Events query command with filters
+- Created internal/query package with EventFilters struct and QueryEvents function
+- Implemented `comms events` command with multiple combinable filters
+- Added flags: --person, --channel, --since, --until, --direction, --limit
+- Dynamic SQL query building based on provided filters
+- Participants loaded per event in separate queries (avoid N+1)
+- JSON output support via --json flag
+- Text output truncates long content to 200 characters
+- Date parsing using time.Parse with "2006-01-02" layout
+- **Files changed:**
+  - internal/query/query.go (new)
+  - cmd/comms/main.go (added events command and parseDate helper)
+  - AGENTS.md (added query patterns)
+- **Learnings:**
+  - Dynamic SQL building: Build query string and args slice based on provided filters
+  - Use DISTINCT when joining with event_participants to avoid duplicate events in results
+  - All filters are ANDed together in WHERE clause for precise filtering
+  - Default limit of 100 prevents overwhelming output on large datasets
+  - time.Parse("2006-01-02", dateStr) parses YYYY-MM-DD dates to time.Time
+  - Load related data (participants) in separate query to keep main query simple
+  - COALESCE(display_name, canonical_name) prioritizes display name in output
+  - ORDER BY timestamp DESC shows most recent events first
+  - Separate getEventParticipants function allows reuse and cleaner code structure
+  - FormatTimestamp helper uses "2006-01-02 15:04:05" layout for human-readable dates
+  - Text output shows filter description when filters applied
+  - Validate direction enum (sent/received/observed) early before querying
+  - Result struct includes both Count and Events array for JSON consumers
