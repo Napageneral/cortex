@@ -22,6 +22,8 @@ Project: comms — Unified Communications Cartographer
 - Identity resolution: Map external IDs via identities table (channel+identifier -> person_id)
 - Tags: Use 'type:value' format, validate type against enum (topic, entity, emotion, project, context)
 - Bulk operations: Reuse filter patterns across commands (EventFilter for both query and tag)
+- DB query: Default read-only (SELECT only), use --write flag for mutations (INSERT/UPDATE/DELETE)
+- Dynamic SQL results: Use []map[string]interface{} with rows.Columns() for flexible schema handling
 
 ## Key Files
 - cmd/comms/main.go — CLI entry point
@@ -324,3 +326,32 @@ Project: comms — Unified Communications Cartographer
   - Use sql.NullFloat64 for optional confidence field that can be NULL
   - SplitN with limit 2 for parsing 'type:value' allows colons in value part
   - Return count of events tagged in bulk mode for user feedback
+
+---
+
+## 2026-01-11 - US-013 DB query command for raw SQL access
+- Implemented `comms db query <sql>` command for direct SQL access to comms.db
+- Default behavior is read-only - only SELECT queries allowed without --write flag
+- Mutation detection checks for INSERT, UPDATE, DELETE, DROP, CREATE, ALTER, TRUNCATE keywords
+- Added --write flag to explicitly allow mutation queries for safety
+- Supports both text output (tab-separated table) and JSON output via --json flag
+- Dynamic column detection using rows.Columns() works with any query schema
+- Results returned as []map[string]interface{} for flexible handling
+- Text output formats as table with column headers, separator line, and row count
+- Handles NULL values by displaying "NULL" in text output
+- Converts []byte values to strings when appropriate for text fields
+- **Files changed:**
+  - cmd/comms/main.go (added db command with query subcommand)
+  - AGENTS.md (added raw SQL query examples and patterns)
+  - scripts/ralph/prd.json (marked US-013 as passing)
+- **Learnings:**
+  - Mutation detection pattern: Check uppercase SQL with strings.HasPrefix for safety keywords
+  - Dynamic query results: Use []interface{} for values and []interface{} for value pointers when scanning
+  - Type assertion for []byte to string conversion needed for text fields from SQLite
+  - rows.Columns() provides column names dynamically for any query
+  - cobra.ExactArgs(1) ensures exactly one positional argument (the SQL query)
+  - Text output uses strings.Join with tab separator for simple table formatting
+  - Result struct with Rows []map[string]interface{} allows flexible JSON output
+  - Safety-first approach: Require explicit --write flag for mutations prevents accidents
+  - Error handling at each step: db open, query execution, column retrieval, row scanning
+  - defer rows.Close() and defer database.Close() ensure cleanup even on errors

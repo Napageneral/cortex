@@ -192,8 +192,8 @@
         "Handles errors gracefully"
       ],
       "priority": 13,
-      "passes": false,
-      "notes": "Pattern from Eve's db query command"
+      "passes": true,
+      "notes": "Implemented with mutation detection and --write flag protection. Supports text and JSON output."
     },
     {
       "id": "US-014",
