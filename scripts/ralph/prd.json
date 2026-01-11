@@ -178,8 +178,8 @@
         "Tags can be user-applied or analysis-discovered"
       ],
       "priority": 12,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented with internal/tag package. Supports single event tagging and bulk tagging with filters (person, channel, since, until)."
     },
     {
       "id": "US-013",

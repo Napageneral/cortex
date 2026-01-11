@@ -20,6 +20,8 @@ Project: comms — Unified Communications Cartographer
 - Upserts: Use `ON CONFLICT(...) DO UPDATE SET ...` for idempotent inserts
 - Sync watermarks: Track last_sync_at per adapter in sync_watermarks table for incremental sync
 - Identity resolution: Map external IDs via identities table (channel+identifier -> person_id)
+- Tags: Use 'type:value' format, validate type against enum (topic, entity, emotion, project, context)
+- Bulk operations: Reuse filter patterns across commands (EventFilter for both query and tag)
 
 ## Key Files
 - cmd/comms/main.go — CLI entry point
@@ -291,3 +293,34 @@ Project: comms — Unified Communications Cartographer
   - cobra.MaximumNArgs(1) allows optional positional argument (0 or 1)
   - Flag precedence: Check --today, then --week, then positional arg for flexible UX
   - Empty results handling: Show helpful "No events found" message instead of empty output
+
+---
+
+## 2026-01-11 - US-012 Tags command for soft tagging
+- Created internal/tag package with ListAll, ListByType, ListByEvent, Add, AddBulk, Delete functions
+- Implemented `comms tag list` command with optional --type filter
+- Implemented `comms tag add` command with two modes:
+  - Single event mode: --event <id> --tag <type:value>
+  - Bulk mode: --person/--channel/--since/--until filters with --tag <type:value>
+- Tag types are validated against enum: topic, entity, emotion, project, context
+- Tags use 'type:value' format (e.g., 'project:htaa', 'context:business')
+- Duplicate tag detection prevents same tag being added twice to same event
+- Tags support confidence scores (0.0-1.0) for analysis-discovered tags via --confidence flag
+- Source field tracks origin: 'user' for manual tags, 'analysis' for AI-discovered tags
+- JSON output support via --json flag for all tag commands
+- **Files changed:**
+  - internal/tag/tag.go (new)
+  - cmd/comms/main.go (added tag command with list and add subcommands)
+  - AGENTS.md (added tag usage examples and patterns)
+  - scripts/ralph/prd.json (marked US-012 as passing)
+- **Learnings:**
+  - Tag validation should happen early - check tag type against valid enum before database operations
+  - Duplicate detection query: `SELECT EXISTS(SELECT 1 FROM tags WHERE event_id = ? AND tag_type = ? AND value = ?)`
+  - Bulk tagging reuses EventFilter pattern from query package for consistency
+  - buildEventFilterQuery() builds dynamic SQL based on provided filters (person, channel, time range)
+  - Skip duplicates silently in bulk mode - don't fail entire operation if one event already has the tag
+  - Tag list shows event preview (channel, content snippet) for context when viewing tags
+  - TagWithEvent struct joins tags with events table for richer display in list command
+  - Use sql.NullFloat64 for optional confidence field that can be NULL
+  - SplitN with limit 2 for parsing 'type:value' allows colons in value part
+  - Return count of events tagged in bulk mode for user feedback
