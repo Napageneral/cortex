@@ -1404,8 +1404,272 @@ queryable event store with identity resolution.`,
 	eventsCmd.Flags().Int("limit", 100, "Maximum number of events to return")
 	rootCmd.AddCommand(eventsCmd)
 
+	// people command
+	peopleCmd := &cobra.Command{
+		Use:   "people [name]",
+		Short: "List and search contacts",
+		Long:  "List all persons, search by name, or show details for a specific person",
+		Args:  cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			type IdentityInfo struct {
+				Channel    string `json:"channel"`
+				Identifier string `json:"identifier"`
+			}
+
+			type PersonInfo struct {
+				ID            string         `json:"id"`
+				Name          string         `json:"name"`
+				DisplayName   string         `json:"display_name,omitempty"`
+				IsMe          bool           `json:"is_me"`
+				Relationship  string         `json:"relationship,omitempty"`
+				Identities    []IdentityInfo `json:"identities"`
+				EventCount    int            `json:"event_count"`
+				LastEventAt   string         `json:"last_event_at,omitempty"`
+			}
+
+			type Result struct {
+				OK      bool         `json:"ok"`
+				Message string       `json:"message,omitempty"`
+				Count   int          `json:"count,omitempty"`
+				Persons []PersonInfo `json:"persons,omitempty"`
+			}
+
+			// Open database
+			database, err := db.Open()
+			if err != nil {
+				result := Result{
+					OK:      false,
+					Message: fmt.Sprintf("Failed to open database: %v", err),
+				}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			// Handle specific person detail view
+			if len(args) == 1 {
+				personName := args[0]
+				person, err := identify.GetPersonByName(database, personName)
+				if err != nil {
+					result := Result{
+						OK:      false,
+						Message: fmt.Sprintf("Failed to get person: %v", err),
+					}
+					if jsonOutput {
+						printJSON(result)
+					} else {
+						fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+					}
+					os.Exit(1)
+				}
+
+				if person == nil {
+					result := Result{
+						OK:      false,
+						Message: fmt.Sprintf("Person '%s' not found", personName),
+					}
+					if jsonOutput {
+						printJSON(result)
+					} else {
+						fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+					}
+					os.Exit(1)
+				}
+
+				// Convert to result format
+				personInfo := PersonInfo{
+					ID:         person.ID,
+					Name:       person.CanonicalName,
+					IsMe:       person.IsMe,
+					EventCount: person.EventCount,
+				}
+				if person.DisplayName != nil {
+					personInfo.DisplayName = *person.DisplayName
+				}
+				if person.RelationType != nil {
+					personInfo.Relationship = *person.RelationType
+				}
+				if person.LastEventAt != nil {
+					personInfo.LastEventAt = query.FormatTimestamp(person.LastEventAt.Unix())
+				}
+				for _, id := range person.Identities {
+					personInfo.Identities = append(personInfo.Identities, IdentityInfo{
+						Channel:    id.Channel,
+						Identifier: id.Identifier,
+					})
+				}
+
+				result := Result{
+					OK:      true,
+					Count:   1,
+					Persons: []PersonInfo{personInfo},
+				}
+
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					nameStr := person.CanonicalName
+					if person.IsMe {
+						nameStr += " (me)"
+					}
+					fmt.Printf("%s\n", nameStr)
+					fmt.Printf("ID: %s\n", person.ID)
+					if person.DisplayName != nil {
+						fmt.Printf("Display name: %s\n", *person.DisplayName)
+					}
+					if person.RelationType != nil {
+						fmt.Printf("Relationship: %s\n", *person.RelationType)
+					}
+					fmt.Printf("\nStatistics:\n")
+					fmt.Printf("  Events: %d\n", person.EventCount)
+					if person.LastEventAt != nil {
+						fmt.Printf("  Last event: %s\n", query.FormatTimestamp(person.LastEventAt.Unix()))
+					}
+					if len(person.Identities) > 0 {
+						fmt.Printf("\nIdentities:\n")
+						for _, id := range person.Identities {
+							fmt.Printf("  - %s: %s\n", id.Channel, id.Identifier)
+						}
+					}
+				}
+				return
+			}
+
+			// Handle list/search mode
+			searchTerm, _ := cmd.Flags().GetString("search")
+			topN, _ := cmd.Flags().GetInt("top")
+
+			var persons []identify.PersonWithIdentities
+			if searchTerm != "" {
+				persons, err = identify.Search(database, searchTerm)
+				if err != nil {
+					result := Result{
+						OK:      false,
+						Message: fmt.Sprintf("Failed to search persons: %v", err),
+					}
+					if jsonOutput {
+						printJSON(result)
+					} else {
+						fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+					}
+					os.Exit(1)
+				}
+			} else {
+				persons, err = identify.ListAll(database)
+				if err != nil {
+					result := Result{
+						OK:      false,
+						Message: fmt.Sprintf("Failed to list persons: %v", err),
+					}
+					if jsonOutput {
+						printJSON(result)
+					} else {
+						fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+					}
+					os.Exit(1)
+				}
+			}
+
+			// Apply top N limit if specified
+			if topN > 0 && topN < len(persons) {
+				persons = persons[:topN]
+			}
+
+			result := Result{
+				OK:    true,
+				Count: len(persons),
+			}
+
+			if len(persons) == 0 {
+				result.Message = "No persons found"
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Println(result.Message)
+				}
+				return
+			}
+
+			// Convert to result format
+			for _, p := range persons {
+				personInfo := PersonInfo{
+					ID:         p.ID,
+					Name:       p.CanonicalName,
+					IsMe:       p.IsMe,
+					EventCount: p.EventCount,
+				}
+				if p.DisplayName != nil {
+					personInfo.DisplayName = *p.DisplayName
+				}
+				if p.RelationType != nil {
+					personInfo.Relationship = *p.RelationType
+				}
+				if p.LastEventAt != nil {
+					personInfo.LastEventAt = query.FormatTimestamp(p.LastEventAt.Unix())
+				}
+				for _, id := range p.Identities {
+					personInfo.Identities = append(personInfo.Identities, IdentityInfo{
+						Channel:    id.Channel,
+						Identifier: id.Identifier,
+					})
+				}
+				result.Persons = append(result.Persons, personInfo)
+			}
+
+			if jsonOutput {
+				printJSON(result)
+			} else {
+				// Print header
+				if searchTerm != "" {
+					fmt.Printf("Search results for '%s':\n", searchTerm)
+				} else if topN > 0 {
+					fmt.Printf("Top %d contacts by event count:\n", len(persons))
+				} else {
+					fmt.Printf("All contacts (%d total):\n", len(persons))
+				}
+				fmt.Println()
+
+				// Print person list
+				for _, p := range persons {
+					nameStr := p.CanonicalName
+					if p.IsMe {
+						nameStr += " (me)"
+					}
+					if p.DisplayName != nil && *p.DisplayName != p.CanonicalName {
+						nameStr += fmt.Sprintf(" [%s]", *p.DisplayName)
+					}
+
+					fmt.Printf("• %s\n", nameStr)
+					if p.EventCount > 0 {
+						fmt.Printf("  Events: %d", p.EventCount)
+						if p.LastEventAt != nil {
+							fmt.Printf(" (last: %s)", query.FormatTimestamp(p.LastEventAt.Unix()))
+						}
+						fmt.Println()
+					}
+					if len(p.Identities) > 0 {
+						fmt.Printf("  Identities: ")
+						identStrs := []string{}
+						for _, id := range p.Identities {
+							identStrs = append(identStrs, fmt.Sprintf("%s:%s", id.Channel, id.Identifier))
+						}
+						fmt.Println(strings.Join(identStrs, ", "))
+					}
+					fmt.Println()
+				}
+			}
+		},
+	}
+
+	peopleCmd.Flags().String("search", "", "Search for persons by name")
+	peopleCmd.Flags().Int("top", 0, "Show only top N persons by event count")
+	rootCmd.AddCommand(peopleCmd)
+
 	// TODO: Add more commands as per PRD
-	// - people
 	// - timeline
 	// - tag
 	// - db

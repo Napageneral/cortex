@@ -147,6 +147,10 @@ make build
 - Use DISTINCT in SELECT when joining with event_participants to avoid duplicate events
 - Load related data (participants) in separate queries to avoid N+1 issues at display layer
 - Truncate long content in text output (200 chars) for readability
+- People command reuses identify package functions (ListAll, Search, GetPersonByName)
+- Support both list mode (no args) and detail mode (person name arg) in people command
+- --top N flag limits results to top N by event count (already sorted by identify.ListAll)
+- Format identities inline for list view (channel:identifier), detailed for detail view
 
 ## Schema Quick Reference
 
