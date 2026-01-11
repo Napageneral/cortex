@@ -1,0 +1,23 @@
+# Ralph Progress Log
+Started: 2026-01-11
+Project: comms — Unified Communications Cartographer
+
+## Codebase Patterns
+<!-- Add reusable patterns here as you discover them -->
+
+- SQLite: Use modernc.org/sqlite (pure Go, no CGO)
+- Config: YAML in ~/.config/comms/config.yaml
+- Data: SQLite in ~/Library/Application Support/Comms/comms.db
+- JSON output: All commands support --json flag
+- Errors: Return structured errors with ok: false in JSON mode
+- Adapters: Each adapter implements Adapter interface
+- Eve DB path: ~/Library/Application Support/Eve/eve.db
+- gogcli: Call via exec, parse JSON output
+
+## Key Files
+- cmd/comms/main.go — CLI entry point
+- internal/db/schema.sql — Database schema
+- internal/db/db.go — Database connection
+- internal/adapters/*.go — Channel adapters
+
+---

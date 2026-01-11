@@ -1,0 +1,227 @@
+{
+  "branchName": "main",
+  "projectName": "comms",
+  "description": "Unified Communications Cartographer - aggregates communications across channels into a single queryable event store",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Project scaffolding",
+      "acceptanceCriteria": [
+        "go.mod with correct module path (github.com/Napageneral/comms)",
+        "Makefile with build, install, test, clean targets",
+        ".goreleaser.yaml for releases",
+        "main.go with cobra root command",
+        "version command works",
+        "go build succeeds"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Use modernc.org/sqlite for pure-Go SQLite"
+    },
+    {
+      "id": "US-002", 
+      "title": "Init command creates config and database",
+      "acceptanceCriteria": [
+        "comms init creates ~/.config/comms/",
+        "comms init creates ~/Library/Application Support/Comms/",
+        "comms init creates comms.db with schema",
+        "Running init twice is idempotent",
+        "JSON output shows paths created"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": "XDG-compliant paths"
+    },
+    {
+      "id": "US-003",
+      "title": "Database schema for events, persons, identities",
+      "acceptanceCriteria": [
+        "events table with: id, timestamp, channel, content_types, content, direction, thread_id, reply_to, source_adapter, source_id",
+        "persons table with: id, canonical_name, display_name, is_me, relationship_type",
+        "identities table with: id, person_id, channel, identifier (unique on channel+identifier)",
+        "event_participants table with: event_id, person_id, role",
+        "tags table with: id, event_id, tag_type, value, confidence, source",
+        "Appropriate indexes on timestamp, person_id, channel",
+        "Schema versioning/migrations support"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": "Schema in internal/db/schema.sql, migrations in internal/db/migrations/"
+    },
+    {
+      "id": "US-004",
+      "title": "Me command to configure user identity",
+      "acceptanceCriteria": [
+        "comms me set --name 'Tyler Brandt' creates person with is_me=true",
+        "comms me set --phone '+17072876731' adds identity",
+        "comms me set --email 'email@example.com' adds identity",
+        "comms me show displays current identity config",
+        "Only one person can have is_me=true"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Adapters command to list and manage adapters",
+      "acceptanceCriteria": [
+        "comms adapters lists configured adapters with status",
+        "comms connect imessage configures iMessage adapter",
+        "comms connect gmail --account <email> configures Gmail adapter",
+        "Adapter config stored in config.yaml",
+        "JSON output support"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": "Adapters: imessage (eve), gmail (gogcli), cursor (aix)"
+    },
+    {
+      "id": "US-006",
+      "title": "Eve adapter pulls events from Eve database",
+      "acceptanceCriteria": [
+        "Reads from Eve's SQLite database (eve.db)",
+        "Maps Eve messages to comms event schema",
+        "Maps Eve contacts to persons with identities",
+        "Handles conversation threading",
+        "Tracks sync watermark for incremental sync",
+        "Direction: is_from_me -> sent, else received"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": "Eve db at ~/Library/Application Support/Eve/eve.db"
+    },
+    {
+      "id": "US-007",
+      "title": "Sync command orchestrates adapter sync",
+      "acceptanceCriteria": [
+        "comms sync runs all enabled adapters",
+        "comms sync --adapter imessage runs specific adapter",
+        "comms sync --full forces full re-sync",
+        "Reports events synced per adapter",
+        "Handles errors gracefully (one adapter failing doesn't stop others)",
+        "JSON output with sync stats"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Union-find identity resolution",
+      "acceptanceCriteria": [
+        "comms identify lists all persons with their identities",
+        "comms identify --search 'Dad' finds matching persons",
+        "comms identify --merge 'Person A' 'Person B' unions them",
+        "Merge updates all event_participants to use canonical person",
+        "comms identify --add 'Dad' --email 'dad@example.com' adds identity",
+        "Duplicate identifier detection and user confirmation"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": "Union-find style merging with user confirmation for uncertain matches"
+    },
+    {
+      "id": "US-009",
+      "title": "Events query command with filters",
+      "acceptanceCriteria": [
+        "comms events lists recent events",
+        "comms events --person 'Dad' filters by person",
+        "comms events --channel imessage filters by channel",
+        "comms events --since 2025-01-01 filters by date",
+        "comms events --until 2025-12-31 filters by date",
+        "comms events --direction sent filters by direction",
+        "Filters are combinable",
+        "JSON output with event details"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "People command lists contacts",
+      "acceptanceCriteria": [
+        "comms people lists all persons",
+        "comms people --top 20 sorts by event count",
+        "comms people --search 'John' searches by name",
+        "comms people 'Dad' shows person details with identities and stats",
+        "JSON output"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-011",
+      "title": "Timeline command for temporal view",
+      "acceptanceCriteria": [
+        "comms timeline 2026-01 shows events in January 2026",
+        "comms timeline 2026-01-15 shows events on specific date",
+        "comms timeline --today shows today's events",
+        "comms timeline --week shows this week",
+        "Groups events by date with counts per person/channel",
+        "JSON output"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-012",
+      "title": "Tags command for soft tagging",
+      "acceptanceCriteria": [
+        "comms tag list shows all tags",
+        "comms tag add --event <id> --tag 'project:htaa' adds tag to event",
+        "comms tag add --filter 'person:Dane' --tag 'context:business' bulk tags",
+        "Tags have type (topic, entity, project, context) and value",
+        "Tags can be user-applied or analysis-discovered"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-013",
+      "title": "DB query command for raw SQL access",
+      "acceptanceCriteria": [
+        "comms db query 'SELECT COUNT(*) FROM events' runs query",
+        "Only SELECT statements allowed without --write flag",
+        "comms db query --write 'UPDATE...' allows mutations",
+        "JSON output of query results",
+        "Handles errors gracefully"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": "Pattern from Eve's db query command"
+    },
+    {
+      "id": "US-014",
+      "title": "Gmail adapter pulls events from gogcli",
+      "acceptanceCriteria": [
+        "Runs gog gmail search to fetch threads",
+        "Maps Gmail threads/messages to comms events",
+        "Extracts participants from to/from/cc fields",
+        "Maps email addresses to identities",
+        "Handles threading via Gmail thread_id",
+        "Tracks sync watermark (last sync date)"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": "Requires gogcli authenticated. Parse JSON output."
+    },
+    {
+      "id": "US-015",
+      "title": "SKILL.md for Nexus integration",
+      "acceptanceCriteria": [
+        "SKILL.md follows nexus skill format",
+        "Documents all commands",
+        "Includes bootstrap instructions for AI agents",
+        "Includes examples of common workflows"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": "Pattern from Eve's SKILL.md"
+    }
+  ]
+}
