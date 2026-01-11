@@ -118,6 +118,20 @@ comms tag add --person "Dane" --tag context:business
 comms tag add --channel imessage --since 2026-01-01 --tag topic:planning
 ```
 
+### Raw SQL queries
+
+```bash
+# Read-only queries (default)
+comms db query "SELECT COUNT(*) FROM events"
+comms db query "SELECT * FROM persons LIMIT 10"
+
+# Mutation queries (requires --write flag)
+comms db query --write "UPDATE persons SET display_name = 'Dad' WHERE canonical_name = 'Father'"
+
+# JSON output for programmatic access
+comms db query --json "SELECT channel, COUNT(*) as count FROM events GROUP BY channel"
+```
+
 ### Running tests
 
 ```bash
@@ -182,6 +196,12 @@ make build
 - Tags can have confidence scores for analysis-discovered tags (0.0-1.0)
 - Tag source tracks origin: 'user' for manual tags, 'analysis' for AI-discovered tags
 - Duplicate tag detection prevents same tag being added to same event multiple times
+- DB query command: default read-only, use --write flag for mutations (INSERT, UPDATE, DELETE)
+- Query mutation detection checks uppercase SQL for keywords: INSERT, UPDATE, DELETE, DROP, CREATE, ALTER, TRUNCATE
+- DB query results returned as []map[string]interface{} for flexible handling of dynamic schemas
+- Convert []byte values to strings when scanning SQL results for text fields
+- Use rows.Columns() to get column names dynamically for any query
+- Text output formats results as tab-separated table with row count
 
 ## Schema Quick Reference
 

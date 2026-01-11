@@ -2196,8 +2196,202 @@ Examples:
 	tagCmd.AddCommand(tagAddCmd)
 	rootCmd.AddCommand(tagCmd)
 
+	// db command
+	dbCmd := &cobra.Command{
+		Use:   "db",
+		Short: "Database operations",
+		Long:  "Perform database operations like raw SQL queries",
+	}
+
+	// db query command
+	dbQueryCmd := &cobra.Command{
+		Use:   "query <sql>",
+		Short: "Execute raw SQL query",
+		Long: `Execute a raw SQL query against the comms database.
+
+By default, only SELECT statements are allowed for safety.
+Use --write flag to allow mutations (INSERT, UPDATE, DELETE, etc.).
+
+Examples:
+  comms db query "SELECT COUNT(*) FROM events"
+  comms db query "SELECT * FROM persons LIMIT 10"
+  comms db query --write "UPDATE persons SET display_name = 'Dad' WHERE canonical_name = 'Father'"`,
+		Args: cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			type Result struct {
+				OK      bool          `json:"ok"`
+				Message string        `json:"message,omitempty"`
+				Rows    []map[string]interface{} `json:"rows,omitempty"`
+				Count   int           `json:"count,omitempty"`
+			}
+
+			sqlQuery := args[0]
+			allowWrite, _ := cmd.Flags().GetBool("write")
+
+			// Check if it's a mutation query without --write flag
+			upperQuery := strings.ToUpper(strings.TrimSpace(sqlQuery))
+			isMutation := false
+			for _, keyword := range []string{"INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE"} {
+				if strings.HasPrefix(upperQuery, keyword) {
+					isMutation = true
+					break
+				}
+			}
+
+			if isMutation && !allowWrite {
+				result := Result{
+					OK:      false,
+					Message: "Query appears to modify data. Use --write flag to allow mutations.",
+				}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			// Open database
+			database, err := db.Open()
+			if err != nil {
+				result := Result{
+					OK:      false,
+					Message: fmt.Sprintf("Failed to open database: %v", err),
+				}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			// Execute query
+			rows, err := database.Query(sqlQuery)
+			if err != nil {
+				result := Result{
+					OK:      false,
+					Message: fmt.Sprintf("Query failed: %v", err),
+				}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			defer rows.Close()
+
+			// Get column names
+			columns, err := rows.Columns()
+			if err != nil {
+				result := Result{
+					OK:      false,
+					Message: fmt.Sprintf("Failed to get columns: %v", err),
+				}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			// Fetch results
+			results := []map[string]interface{}{}
+			for rows.Next() {
+				// Create a slice of interface{} to hold each column value
+				values := make([]interface{}, len(columns))
+				valuePtrs := make([]interface{}, len(columns))
+				for i := range values {
+					valuePtrs[i] = &values[i]
+				}
+
+				// Scan the row
+				if err := rows.Scan(valuePtrs...); err != nil {
+					result := Result{
+						OK:      false,
+						Message: fmt.Sprintf("Failed to scan row: %v", err),
+					}
+					if jsonOutput {
+						printJSON(result)
+					} else {
+						fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+					}
+					os.Exit(1)
+				}
+
+				// Build map for this row
+				rowMap := make(map[string]interface{})
+				for i, col := range columns {
+					val := values[i]
+					// Convert []byte to string for text fields
+					if b, ok := val.([]byte); ok {
+						rowMap[col] = string(b)
+					} else {
+						rowMap[col] = val
+					}
+				}
+				results = append(results, rowMap)
+			}
+
+			if err := rows.Err(); err != nil {
+				result := Result{
+					OK:      false,
+					Message: fmt.Sprintf("Error iterating rows: %v", err),
+				}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			result := Result{
+				OK:    true,
+				Rows:  results,
+				Count: len(results),
+			}
+
+			if jsonOutput {
+				printJSON(result)
+			} else {
+				// Text output
+				if len(results) == 0 {
+					fmt.Println("No rows returned.")
+				} else {
+					// Print as a simple table
+					// Print header
+					fmt.Println(strings.Join(columns, "\t"))
+					fmt.Println(strings.Repeat("-", 80))
+
+					// Print rows
+					for _, row := range results {
+						values := make([]string, len(columns))
+						for i, col := range columns {
+							val := row[col]
+							if val == nil {
+								values[i] = "NULL"
+							} else {
+								values[i] = fmt.Sprintf("%v", val)
+							}
+						}
+						fmt.Println(strings.Join(values, "\t"))
+					}
+
+					fmt.Printf("\n%d row(s) returned\n", len(results))
+				}
+			}
+		},
+	}
+
+	dbQueryCmd.Flags().Bool("write", false, "Allow mutation queries (INSERT, UPDATE, DELETE, etc.)")
+	dbCmd.AddCommand(dbQueryCmd)
+	rootCmd.AddCommand(dbCmd)
+
 	// TODO: Add more commands as per PRD
-	// - db
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
