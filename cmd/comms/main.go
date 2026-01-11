@@ -1,17 +1,19 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/Napageneral/comms/internal/config"
 	"github.com/Napageneral/comms/internal/db"
+	"github.com/Napageneral/comms/internal/identify"
 	"github.com/Napageneral/comms/internal/me"
 	"github.com/Napageneral/comms/internal/sync"
 	"github.com/spf13/cobra"
-	"path/filepath"
-	"context"
 )
 
 var (
@@ -744,11 +746,434 @@ queryable event store with identity resolution.`,
 	syncCmd.Flags().Bool("full", false, "Force full re-sync instead of incremental")
 	rootCmd.AddCommand(syncCmd)
 
+	// identify command
+	identifyCmd := &cobra.Command{
+		Use:   "identify",
+		Short: "Manage identity resolution and person merging",
+		Long:  "List, search, merge, and manage person identities across channels",
+		Run: func(cmd *cobra.Command, args []string) {
+			type IdentityInfo struct {
+				Channel    string `json:"channel"`
+				Identifier string `json:"identifier"`
+			}
+
+			type PersonInfo struct {
+				ID            string         `json:"id"`
+				Name          string         `json:"name"`
+				DisplayName   string         `json:"display_name,omitempty"`
+				IsMe          bool           `json:"is_me"`
+				Identities    []IdentityInfo `json:"identities"`
+				EventCount    int            `json:"event_count"`
+			}
+
+			type Result struct {
+				OK      bool         `json:"ok"`
+				Message string       `json:"message,omitempty"`
+				Persons []PersonInfo `json:"persons,omitempty"`
+			}
+
+			// Open database
+			database, err := db.Open()
+			if err != nil {
+				result := Result{
+					OK:      false,
+					Message: fmt.Sprintf("Failed to open database: %v", err),
+				}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			searchTerm, _ := cmd.Flags().GetString("search")
+
+			var persons []identify.PersonWithIdentities
+			if searchTerm != "" {
+				persons, err = identify.Search(database, searchTerm)
+				if err != nil {
+					result := Result{
+						OK:      false,
+						Message: fmt.Sprintf("Failed to search persons: %v", err),
+					}
+					if jsonOutput {
+						printJSON(result)
+					} else {
+						fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+					}
+					os.Exit(1)
+				}
+			} else {
+				persons, err = identify.ListAll(database)
+				if err != nil {
+					result := Result{
+						OK:      false,
+						Message: fmt.Sprintf("Failed to list persons: %v", err),
+					}
+					if jsonOutput {
+						printJSON(result)
+					} else {
+						fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+					}
+					os.Exit(1)
+				}
+			}
+
+			result := Result{OK: true}
+
+			if len(persons) == 0 {
+				result.Message = "No persons found"
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Println(result.Message)
+				}
+				return
+			}
+
+			// Convert to result format
+			for _, p := range persons {
+				personInfo := PersonInfo{
+					ID:         p.ID,
+					Name:       p.CanonicalName,
+					IsMe:       p.IsMe,
+					EventCount: p.EventCount,
+				}
+				if p.DisplayName != nil {
+					personInfo.DisplayName = *p.DisplayName
+				}
+				for _, id := range p.Identities {
+					personInfo.Identities = append(personInfo.Identities, IdentityInfo{
+						Channel:    id.Channel,
+						Identifier: id.Identifier,
+					})
+				}
+				result.Persons = append(result.Persons, personInfo)
+			}
+
+			if jsonOutput {
+				printJSON(result)
+			} else {
+				if searchTerm != "" {
+					fmt.Printf("Search results for '%s':\n\n", searchTerm)
+				} else {
+					fmt.Printf("All persons (%d total):\n\n", len(persons))
+				}
+
+				for _, p := range persons {
+					nameStr := p.CanonicalName
+					if p.IsMe {
+						nameStr += " (me)"
+					}
+					fmt.Printf("• %s\n", nameStr)
+					fmt.Printf("  ID: %s\n", p.ID)
+					if p.DisplayName != nil {
+						fmt.Printf("  Display name: %s\n", *p.DisplayName)
+					}
+					if p.EventCount > 0 {
+						fmt.Printf("  Events: %d\n", p.EventCount)
+					}
+					if len(p.Identities) > 0 {
+						fmt.Printf("  Identities:\n")
+						for _, id := range p.Identities {
+							fmt.Printf("    - %s: %s\n", id.Channel, id.Identifier)
+						}
+					}
+					fmt.Println()
+				}
+			}
+		},
+	}
+
+	identifyCmd.Flags().String("search", "", "Search for persons by name or identifier")
+
+	// identify --merge command
+	identifyMergeCmd := &cobra.Command{
+		Use:   "merge <person1> <person2>",
+		Short: "Merge two persons (union-find operation)",
+		Long:  "Merge person2 into person1. All identities and events from person2 will be transferred to person1.",
+		Args:  cobra.ExactArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			type Result struct {
+				OK      bool   `json:"ok"`
+				Message string `json:"message,omitempty"`
+			}
+
+			person1Name := args[0]
+			person2Name := args[1]
+
+			// Open database
+			database, err := db.Open()
+			if err != nil {
+				result := Result{
+					OK:      false,
+					Message: fmt.Sprintf("Failed to open database: %v", err),
+				}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			// Find person1 by name
+			person1, err := identify.GetPersonByName(database, person1Name)
+			if err != nil {
+				result := Result{
+					OK:      false,
+					Message: fmt.Sprintf("Failed to find person1: %v", err),
+				}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			if person1 == nil {
+				result := Result{
+					OK:      false,
+					Message: fmt.Sprintf("Person '%s' not found", person1Name),
+				}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			// Find person2 by name
+			person2, err := identify.GetPersonByName(database, person2Name)
+			if err != nil {
+				result := Result{
+					OK:      false,
+					Message: fmt.Sprintf("Failed to find person2: %v", err),
+				}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			if person2 == nil {
+				result := Result{
+					OK:      false,
+					Message: fmt.Sprintf("Person '%s' not found", person2Name),
+				}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			// Merge person2 into person1
+			err = identify.Merge(database, person1.ID, person2.ID)
+			if err != nil {
+				result := Result{
+					OK:      false,
+					Message: fmt.Sprintf("Failed to merge persons: %v", err),
+				}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			result := Result{
+				OK:      true,
+				Message: fmt.Sprintf("Successfully merged '%s' into '%s'", person2Name, person1Name),
+			}
+
+			if jsonOutput {
+				printJSON(result)
+			} else {
+				fmt.Printf("✓ Merged '%s' into '%s'\n", person2Name, person1Name)
+				fmt.Printf("  All identities and events from '%s' are now associated with '%s'\n", person2Name, person1Name)
+			}
+		},
+	}
+
+	// identify --add command
+	identifyAddCmd := &cobra.Command{
+		Use:   "add <person> --email <email> | --phone <phone> | --identifier <channel>:<identifier>",
+		Short: "Add an identity to a person",
+		Long:  "Add a new identity (email, phone, or custom identifier) to an existing person",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			type Result struct {
+				OK      bool   `json:"ok"`
+				Message string `json:"message,omitempty"`
+			}
+
+			personName := args[0]
+			email, _ := cmd.Flags().GetString("email")
+			phone, _ := cmd.Flags().GetString("phone")
+			identifier, _ := cmd.Flags().GetString("identifier")
+
+			if email == "" && phone == "" && identifier == "" {
+				result := Result{
+					OK:      false,
+					Message: "At least one of --email, --phone, or --identifier must be provided",
+				}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			// Open database
+			database, err := db.Open()
+			if err != nil {
+				result := Result{
+					OK:      false,
+					Message: fmt.Sprintf("Failed to open database: %v", err),
+				}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			// Find person by name
+			person, err := identify.GetPersonByName(database, personName)
+			if err != nil {
+				result := Result{
+					OK:      false,
+					Message: fmt.Sprintf("Failed to find person: %v", err),
+				}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			if person == nil {
+				result := Result{
+					OK:      false,
+					Message: fmt.Sprintf("Person '%s' not found", personName),
+				}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			// Add identities
+			var added []string
+
+			if email != "" {
+				err = identify.AddIdentityToPerson(database, person.ID, "email", email)
+				if err != nil {
+					result := Result{
+						OK:      false,
+						Message: fmt.Sprintf("Failed to add email: %v", err),
+					}
+					if jsonOutput {
+						printJSON(result)
+					} else {
+						fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+					}
+					os.Exit(1)
+				}
+				added = append(added, fmt.Sprintf("email: %s", email))
+			}
+
+			if phone != "" {
+				err = identify.AddIdentityToPerson(database, person.ID, "phone", phone)
+				if err != nil {
+					result := Result{
+						OK:      false,
+						Message: fmt.Sprintf("Failed to add phone: %v", err),
+					}
+					if jsonOutput {
+						printJSON(result)
+					} else {
+						fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+					}
+					os.Exit(1)
+				}
+				added = append(added, fmt.Sprintf("phone: %s", phone))
+			}
+
+			if identifier != "" {
+				// Parse channel:identifier format
+				parts := strings.SplitN(identifier, ":", 2)
+				if len(parts) != 2 {
+					result := Result{
+						OK:      false,
+						Message: "Identifier must be in format 'channel:identifier'",
+					}
+					if jsonOutput {
+						printJSON(result)
+					} else {
+						fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+					}
+					os.Exit(1)
+				}
+				channel, id := parts[0], parts[1]
+
+				err = identify.AddIdentityToPerson(database, person.ID, channel, id)
+				if err != nil {
+					result := Result{
+						OK:      false,
+						Message: fmt.Sprintf("Failed to add identifier: %v", err),
+					}
+					if jsonOutput {
+						printJSON(result)
+					} else {
+						fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+					}
+					os.Exit(1)
+				}
+				added = append(added, fmt.Sprintf("%s: %s", channel, id))
+			}
+
+			result := Result{
+				OK:      true,
+				Message: fmt.Sprintf("Successfully added identities to '%s'", personName),
+			}
+
+			if jsonOutput {
+				printJSON(result)
+			} else {
+				fmt.Printf("✓ Added identities to '%s':\n", personName)
+				for _, a := range added {
+					fmt.Printf("  - %s\n", a)
+				}
+			}
+		},
+	}
+
+	identifyAddCmd.Flags().String("email", "", "Email address to add")
+	identifyAddCmd.Flags().String("phone", "", "Phone number to add")
+	identifyAddCmd.Flags().String("identifier", "", "Custom identifier in format 'channel:identifier'")
+
+	identifyCmd.AddCommand(identifyMergeCmd)
+	identifyCmd.AddCommand(identifyAddCmd)
+	rootCmd.AddCommand(identifyCmd)
+
 	// TODO: Add more commands as per PRD
 	// - events
 	// - people
 	// - timeline
-	// - identify
 	// - tag
 	// - db
 

@@ -135,6 +135,12 @@ make build
 - Sync command orchestrates all adapters via internal/sync package
 - One adapter failing during sync doesn't stop others from running
 - Use context.Background() for sync operations (can be enhanced later with timeouts)
+- Identity merge operation: cannot merge 'me' person into another person (must be target)
+- When merging persons, handle duplicate event_participants with ON CONFLICT DO NOTHING
+- GetPersonByName matches both canonical_name and display_name for flexibility
+- Search uses LIKE with LOWER() for case-insensitive fuzzy matching
+- Join with event_participants to show event count per person (useful for sorting)
+- Custom identifiers support 'channel:identifier' format (e.g., 'slack:U123456')
 
 ## Schema Quick Reference
 
