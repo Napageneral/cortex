@@ -220,7 +220,7 @@
         "Includes examples of common workflows"
       ],
       "priority": 15,
-      "passes": false,
+      "passes": true,
       "notes": "Pattern from Eve's SKILL.md"
     }
   ]

@@ -394,3 +394,24 @@ Project: comms — Unified Communications Cartographer
   - Warning messages printed for individual thread failures, but sync continues for other threads
   - content_types array includes "attachment" when hasAttachments returns true
   - Email used as canonical_name for new persons (user can update with display name later)
+
+---
+
+## 2026-01-11 - US-015 SKILL.md for Nexus integration
+- SKILL.md was already complete and met all acceptance criteria
+- Frontmatter contains nexus metadata with emoji, OS requirements, binaries, and install methods
+- All commands documented across Setup, Sync, Query, Identity Management, and Tags sections
+- Bootstrap section provides step-by-step instructions for AI agents
+- Tips for Agents section includes example workflow patterns
+- **Files changed:**
+  - scripts/ralph/prd.json (marked US-015 as passing)
+  - scripts/ralph/progress.txt (added US-015 learnings)
+- **Learnings:**
+  - SKILL.md is user-facing documentation that doubles as machine-readable skill definition
+  - Nexus skill format uses YAML frontmatter with metadata object for integration
+  - metadata.nexus.emoji provides visual identifier in Nexus UI
+  - metadata.nexus.requires.bins declares binary dependencies for installation validation
+  - metadata.nexus.install array supports multiple installation methods (brew, go, etc.)
+  - Bootstrap section should be concrete and executable (not just conceptual)
+  - AI agent tips should include realistic example queries with expected workflows
+  - SKILL.md lives at project root for easy discovery by both humans and tooling
