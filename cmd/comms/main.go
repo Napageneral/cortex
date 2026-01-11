@@ -7,11 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Napageneral/comms/internal/config"
 	"github.com/Napageneral/comms/internal/db"
 	"github.com/Napageneral/comms/internal/identify"
 	"github.com/Napageneral/comms/internal/me"
+	"github.com/Napageneral/comms/internal/query"
 	"github.com/Napageneral/comms/internal/sync"
 	"github.com/spf13/cobra"
 )
@@ -1170,8 +1172,239 @@ queryable event store with identity resolution.`,
 	identifyCmd.AddCommand(identifyAddCmd)
 	rootCmd.AddCommand(identifyCmd)
 
+	// events command
+	eventsCmd := &cobra.Command{
+		Use:   "events",
+		Short: "Query communication events",
+		Long:  "Query and filter communication events across all channels",
+		Run: func(cmd *cobra.Command, args []string) {
+			type ParticipantInfo struct {
+				Name string `json:"name"`
+				Role string `json:"role"`
+			}
+
+			type EventInfo struct {
+				ID           string            `json:"id"`
+				Timestamp    int64             `json:"timestamp"`
+				TimestampStr string            `json:"timestamp_str"`
+				Channel      string            `json:"channel"`
+				ContentTypes string            `json:"content_types"`
+				Content      string            `json:"content"`
+				Direction    string            `json:"direction"`
+				ThreadID     *string           `json:"thread_id,omitempty"`
+				ReplyTo      *string           `json:"reply_to,omitempty"`
+				Participants []ParticipantInfo `json:"participants"`
+			}
+
+			type Result struct {
+				OK      bool        `json:"ok"`
+				Message string      `json:"message,omitempty"`
+				Count   int         `json:"count"`
+				Events  []EventInfo `json:"events,omitempty"`
+			}
+
+			// Parse flags
+			personName, _ := cmd.Flags().GetString("person")
+			channel, _ := cmd.Flags().GetString("channel")
+			sinceStr, _ := cmd.Flags().GetString("since")
+			untilStr, _ := cmd.Flags().GetString("until")
+			direction, _ := cmd.Flags().GetString("direction")
+			limit, _ := cmd.Flags().GetInt("limit")
+
+			// Build filters
+			filters := query.EventFilters{
+				PersonName: personName,
+				Channel:    channel,
+				Direction:  direction,
+				Limit:      limit,
+			}
+
+			// Parse since date
+			if sinceStr != "" {
+				since, err := parseDate(sinceStr)
+				if err != nil {
+					result := Result{
+						OK:      false,
+						Message: fmt.Sprintf("Invalid since date: %v. Use format YYYY-MM-DD", err),
+					}
+					if jsonOutput {
+						printJSON(result)
+					} else {
+						fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+					}
+					os.Exit(1)
+				}
+				filters.Since = since
+			}
+
+			// Parse until date
+			if untilStr != "" {
+				until, err := parseDate(untilStr)
+				if err != nil {
+					result := Result{
+						OK:      false,
+						Message: fmt.Sprintf("Invalid until date: %v. Use format YYYY-MM-DD", err),
+					}
+					if jsonOutput {
+						printJSON(result)
+					} else {
+						fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+					}
+					os.Exit(1)
+				}
+				filters.Until = until
+			}
+
+			// Validate direction
+			if direction != "" && direction != "sent" && direction != "received" && direction != "observed" {
+				result := Result{
+					OK:      false,
+					Message: "Invalid direction. Must be one of: sent, received, observed",
+				}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			// Open database
+			database, err := db.Open()
+			if err != nil {
+				result := Result{
+					OK:      false,
+					Message: fmt.Sprintf("Failed to open database: %v", err),
+				}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			// Query events
+			events, err := query.QueryEvents(database, filters)
+			if err != nil {
+				result := Result{
+					OK:      false,
+					Message: fmt.Sprintf("Failed to query events: %v", err),
+				}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			result := Result{
+				OK:    true,
+				Count: len(events),
+			}
+
+			// Convert events to result format
+			for _, e := range events {
+				eventInfo := EventInfo{
+					ID:           e.ID,
+					Timestamp:    e.Timestamp,
+					TimestampStr: query.FormatTimestamp(e.Timestamp),
+					Channel:      e.Channel,
+					ContentTypes: e.ContentTypes,
+					Content:      e.Content,
+					Direction:    e.Direction,
+					ThreadID:     e.ThreadID,
+					ReplyTo:      e.ReplyTo,
+				}
+
+				for _, p := range e.Participants {
+					eventInfo.Participants = append(eventInfo.Participants, ParticipantInfo{
+						Name: p.Name,
+						Role: p.Role,
+					})
+				}
+
+				result.Events = append(result.Events, eventInfo)
+			}
+
+			if jsonOutput {
+				printJSON(result)
+			} else {
+				if len(events) == 0 {
+					fmt.Println("No events found matching the specified filters.")
+					return
+				}
+
+				// Build filter description
+				filterParts := []string{}
+				if personName != "" {
+					filterParts = append(filterParts, fmt.Sprintf("person: %s", personName))
+				}
+				if channel != "" {
+					filterParts = append(filterParts, fmt.Sprintf("channel: %s", channel))
+				}
+				if direction != "" {
+					filterParts = append(filterParts, fmt.Sprintf("direction: %s", direction))
+				}
+				if sinceStr != "" {
+					filterParts = append(filterParts, fmt.Sprintf("since: %s", sinceStr))
+				}
+				if untilStr != "" {
+					filterParts = append(filterParts, fmt.Sprintf("until: %s", untilStr))
+				}
+
+				if len(filterParts) > 0 {
+					fmt.Printf("Events (%s):\n", strings.Join(filterParts, ", "))
+				} else {
+					fmt.Printf("Recent events (showing up to %d):\n", limit)
+				}
+				fmt.Printf("Found %d event(s)\n\n", len(events))
+
+				for i, e := range events {
+					if i > 0 {
+						fmt.Println("---")
+					}
+
+					fmt.Printf("ID: %s\n", e.ID)
+					fmt.Printf("Time: %s\n", query.FormatTimestamp(e.Timestamp))
+					fmt.Printf("Channel: %s\n", e.Channel)
+					fmt.Printf("Direction: %s\n", e.Direction)
+
+					if len(e.Participants) > 0 {
+						fmt.Println("Participants:")
+						for _, p := range e.Participants {
+							fmt.Printf("  - %s (%s)\n", p.Name, p.Role)
+						}
+					}
+
+					if e.Content != "" {
+						// Truncate long content for display
+						content := e.Content
+						if len(content) > 200 {
+							content = content[:200] + "..."
+						}
+						fmt.Printf("Content: %s\n", content)
+					}
+
+					if e.ThreadID != nil {
+						fmt.Printf("Thread: %s\n", *e.ThreadID)
+					}
+				}
+			}
+		},
+	}
+
+	eventsCmd.Flags().String("person", "", "Filter by person name")
+	eventsCmd.Flags().String("channel", "", "Filter by channel (e.g., imessage, gmail)")
+	eventsCmd.Flags().String("since", "", "Filter by start date (YYYY-MM-DD)")
+	eventsCmd.Flags().String("until", "", "Filter by end date (YYYY-MM-DD)")
+	eventsCmd.Flags().String("direction", "", "Filter by direction (sent, received, observed)")
+	eventsCmd.Flags().Int("limit", 100, "Maximum number of events to return")
+	rootCmd.AddCommand(eventsCmd)
+
 	// TODO: Add more commands as per PRD
-	// - events
 	// - people
 	// - timeline
 	// - tag
@@ -1186,6 +1419,11 @@ func printJSON(v interface{}) {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	enc.Encode(v)
+}
+
+// parseDate parses a date string in YYYY-MM-DD format
+func parseDate(dateStr string) (time.Time, error) {
+	return time.Parse("2006-01-02", dateStr)
 }
 
 // checkAdapterStatus checks if an adapter's prerequisites are met

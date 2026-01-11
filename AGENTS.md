@@ -141,6 +141,12 @@ make build
 - Search uses LIKE with LOWER() for case-insensitive fuzzy matching
 - Join with event_participants to show event count per person (useful for sorting)
 - Custom identifiers support 'channel:identifier' format (e.g., 'slack:U123456')
+- Query building: Use dynamic SQL with conditions based on provided filters
+- Date parsing: Use time.Parse with layout "2006-01-02" for YYYY-MM-DD format
+- Query filters are combinable - all provided filters are ANDed together
+- Use DISTINCT in SELECT when joining with event_participants to avoid duplicate events
+- Load related data (participants) in separate queries to avoid N+1 issues at display layer
+- Truncate long content in text output (200 chars) for readability
 
 ## Schema Quick Reference
 
