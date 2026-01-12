@@ -36,6 +36,11 @@ type AdapterConfig struct {
 
 // GetConfigDir returns the XDG-compliant config directory
 func GetConfigDir() (string, error) {
+	// Explicit override (useful for tests and portable installs)
+	if override := os.Getenv("COMMS_CONFIG_DIR"); override != "" {
+		return override, nil
+	}
+
 	var base string
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
 		base = xdg
@@ -51,6 +56,11 @@ func GetConfigDir() (string, error) {
 
 // GetDataDir returns the platform-specific data directory
 func GetDataDir() (string, error) {
+	// Explicit override (useful for tests and portable installs)
+	if override := os.Getenv("COMMS_DATA_DIR"); override != "" {
+		return override, nil
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("failed to get home directory: %w", err)

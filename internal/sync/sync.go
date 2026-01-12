@@ -130,6 +130,23 @@ func syncAdapter(ctx context.Context, db *sql.DB, name string, cfg config.Adapte
 			return result
 		}
 
+	case "aix":
+		sourceVal, ok := cfg.Options["source"]
+		if !ok {
+			result.Error = "aix adapter requires 'source' in config (e.g., cursor)"
+			return result
+		}
+		source, ok := sourceVal.(string)
+		if !ok || source == "" {
+			result.Error = "aix adapter 'source' must be a string"
+			return result
+		}
+		adapter, err = adapters.NewAixAdapter(source)
+		if err != nil {
+			result.Error = fmt.Sprintf("Failed to create adapter: %v", err)
+			return result
+		}
+
 	default:
 		result.Error = fmt.Sprintf("Unknown adapter type: %s", cfg.Type)
 		return result

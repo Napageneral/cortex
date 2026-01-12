@@ -646,6 +646,87 @@ queryable event store with identity resolution.`,
 
 	connectCmd.AddCommand(connectImessageCmd)
 	connectCmd.AddCommand(connectGmailCmd)
+
+	// connect cursor (via aix)
+	connectCursorCmd := &cobra.Command{
+		Use:   "cursor",
+		Short: "Configure Cursor AI sessions adapter (via aix)",
+		Run: func(cmd *cobra.Command, args []string) {
+			type Result struct {
+				OK      bool   `json:"ok"`
+				Message string `json:"message,omitempty"`
+			}
+
+			home, err := os.UserHomeDir()
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to get home directory: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			aixDBPath := filepath.Join(home, "Library", "Application Support", "aix", "aix.db")
+			if _, err := os.Stat(aixDBPath); os.IsNotExist(err) {
+				result := Result{
+					OK:      false,
+					Message: fmt.Sprintf("aix database not found at %s. Run aix first: aix init && aix sync --source cursor (or --all)", aixDBPath),
+				}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n\n", result.Message)
+					fmt.Fprintf(os.Stderr, "To fix this:\n")
+					fmt.Fprintf(os.Stderr, "  1. Build/install aix\n")
+					fmt.Fprintf(os.Stderr, "  2. Run: aix init\n")
+					fmt.Fprintf(os.Stderr, "  3. Run: aix sync --source cursor (or: aix sync --all)\n")
+				}
+				os.Exit(1)
+			}
+
+			cfg, err := config.Load()
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to load config: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			cfg.Adapters["cursor"] = config.AdapterConfig{
+				Type:    "aix",
+				Enabled: true,
+				Options: map[string]interface{}{
+					"source": "cursor",
+				},
+			}
+
+			if err := cfg.Save(); err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to save config: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			result := Result{OK: true, Message: "Cursor adapter configured successfully"}
+			if jsonOutput {
+				printJSON(result)
+			} else {
+				fmt.Println("✓ Cursor adapter configured")
+				fmt.Printf("  aix database: %s\n", aixDBPath)
+				fmt.Println("\nRun 'comms sync --adapter cursor' to sync Cursor AI sessions")
+			}
+		},
+	}
+
+	connectCmd.AddCommand(connectCursorCmd)
 	rootCmd.AddCommand(connectCmd)
 
 	// sync command
@@ -2432,6 +2513,20 @@ func checkAdapterStatus(name string, adapter config.AdapterConfig) string {
 			return "ready (check gogcli auth)"
 		}
 		return "missing account"
+
+	case "aix":
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "error"
+		}
+		aixDBPath := filepath.Join(home, "Library", "Application Support", "aix", "aix.db")
+		if _, err := os.Stat(aixDBPath); os.IsNotExist(err) {
+			return "missing aix database (run: aix sync --all)"
+		}
+		if source, ok := adapter.Options["source"].(string); ok && source != "" {
+			return "ready"
+		}
+		return "missing source"
 
 	default:
 		return "unknown adapter type"

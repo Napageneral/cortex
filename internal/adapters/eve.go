@@ -72,7 +72,7 @@ func (e *EveAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sync
 	result.PersonsCreated = personsCreated
 
 	// Sync messages
-	eventsCreated, eventsUpdated, err := e.syncMessages(ctx, eveDB, commsDB, lastSyncTimestamp)
+	eventsCreated, eventsUpdated, maxImportedTimestamp, err := e.syncMessages(ctx, eveDB, commsDB, lastSyncTimestamp)
 	if err != nil {
 		return result, fmt.Errorf("failed to sync messages: %w", err)
 	}
@@ -80,12 +80,17 @@ func (e *EveAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sync
 	result.EventsUpdated = eventsUpdated
 
 	// Update sync watermark
-	now := time.Now().Unix()
+	// IMPORTANT: use the max imported event timestamp, NOT wall-clock time.
+	// This avoids skipping late-arriving/backfilled messages whose timestamp is older than "now".
+	watermark := lastSyncTimestamp
+	if maxImportedTimestamp > watermark {
+		watermark = maxImportedTimestamp
+	}
 	_, err = commsDB.Exec(`
 		INSERT INTO sync_watermarks (adapter, last_sync_at)
 		VALUES (?, ?)
 		ON CONFLICT(adapter) DO UPDATE SET last_sync_at = excluded.last_sync_at
-	`, e.Name(), now)
+	`, e.Name(), watermark)
 	if err != nil {
 		return result, fmt.Errorf("failed to update sync watermark: %w", err)
 	}
@@ -191,7 +196,7 @@ func (e *EveAdapter) syncContacts(ctx context.Context, eveDB, commsDB *sql.DB) (
 }
 
 // syncMessages syncs Eve messages to comms events
-func (e *EveAdapter) syncMessages(ctx context.Context, eveDB, commsDB *sql.DB, lastSyncTimestamp int64) (int, int, error) {
+func (e *EveAdapter) syncMessages(ctx context.Context, eveDB, commsDB *sql.DB, lastSyncTimestamp int64) (int, int, int64, error) {
 	// Query messages from Eve
 	query := `
 		SELECT
@@ -200,26 +205,27 @@ func (e *EveAdapter) syncMessages(ctx context.Context, eveDB, commsDB *sql.DB, l
 			m.chat_id,
 			m.sender_id,
 			m.content,
-			m.timestamp,
+			CAST(strftime('%s', m.timestamp) AS INTEGER) as timestamp_unix,
 			m.is_from_me,
 			m.service_name,
 			m.reply_to_guid,
-			c.chat_identifier,
+			COALESCE(c.chat_identifier, printf('chat_id:%d', m.chat_id)) as thread_id,
 			(SELECT COUNT(*) FROM attachments a WHERE a.message_id = m.id) as attachment_count
 		FROM messages m
-		JOIN chats c ON m.chat_id = c.id
-		WHERE m.timestamp > ?
-		ORDER BY m.timestamp ASC
+		LEFT JOIN chats c ON m.chat_id = c.id
+		WHERE CAST(strftime('%s', m.timestamp) AS INTEGER) > ?
+		ORDER BY timestamp_unix ASC
 	`
 
 	rows, err := eveDB.Query(query, lastSyncTimestamp)
 	if err != nil {
-		return 0, 0, fmt.Errorf("failed to query Eve messages: %w", err)
+		return 0, 0, 0, fmt.Errorf("failed to query Eve messages: %w", err)
 	}
 	defer rows.Close()
 
 	eventsCreated := 0
 	eventsUpdated := 0
+	maxImportedTimestamp := int64(0)
 
 	for rows.Next() {
 		var messageID int64
@@ -231,7 +237,11 @@ func (e *EveAdapter) syncMessages(ctx context.Context, eveDB, commsDB *sql.DB, l
 		var attachmentCount int
 
 		if err := rows.Scan(&messageID, &guid, &chatID, &senderID, &content, &timestamp, &isFromMe, &serviceName, &replyToGuid, &chatIdentifier, &attachmentCount); err != nil {
-			return eventsCreated, eventsUpdated, fmt.Errorf("failed to scan message row: %w", err)
+			return eventsCreated, eventsUpdated, maxImportedTimestamp, fmt.Errorf("failed to scan message row: %w", err)
+		}
+
+		if timestamp > maxImportedTimestamp {
+			maxImportedTimestamp = timestamp
 		}
 
 		// Build content types array
@@ -248,7 +258,7 @@ func (e *EveAdapter) syncMessages(ctx context.Context, eveDB, commsDB *sql.DB, l
 
 		contentTypesJSON, err := json.Marshal(contentTypes)
 		if err != nil {
-			return eventsCreated, eventsUpdated, fmt.Errorf("failed to marshal content types: %w", err)
+			return eventsCreated, eventsUpdated, maxImportedTimestamp, fmt.Errorf("failed to marshal content types: %w", err)
 		}
 
 		// Determine direction
@@ -266,12 +276,14 @@ func (e *EveAdapter) syncMessages(ctx context.Context, eveDB, commsDB *sql.DB, l
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(source_adapter, source_id) DO UPDATE SET
 				content = excluded.content,
-				content_types = excluded.content_types
+				content_types = excluded.content_types,
+				thread_id = excluded.thread_id,
+				reply_to = excluded.reply_to
 		`, eventID, timestamp, "imessage", string(contentTypesJSON), content.String,
 			direction, chatIdentifier, replyToGuid.String, e.Name(), guid)
 
 		if err != nil {
-			return eventsCreated, eventsUpdated, fmt.Errorf("failed to insert/update event: %w", err)
+			return eventsCreated, eventsUpdated, maxImportedTimestamp, fmt.Errorf("failed to insert/update event: %w", err)
 		}
 
 		// Check if this was an insert or update
@@ -321,7 +333,7 @@ func (e *EveAdapter) syncMessages(ctx context.Context, eveDB, commsDB *sql.DB, l
 						ON CONFLICT(event_id, person_id, role) DO NOTHING
 					`, eventID, personID, role)
 					if err != nil {
-						return eventsCreated, eventsUpdated, fmt.Errorf("failed to insert event participant: %w", err)
+						return eventsCreated, eventsUpdated, maxImportedTimestamp, fmt.Errorf("failed to insert event participant: %w", err)
 					}
 				}
 			}
@@ -338,11 +350,14 @@ func (e *EveAdapter) syncMessages(ctx context.Context, eveDB, commsDB *sql.DB, l
 					ON CONFLICT(event_id, person_id, role) DO NOTHING
 				`, eventID, mePersonID, "sender")
 				if err != nil {
-					return eventsCreated, eventsUpdated, fmt.Errorf("failed to insert me as sender: %w", err)
+					return eventsCreated, eventsUpdated, maxImportedTimestamp, fmt.Errorf("failed to insert me as sender: %w", err)
 				}
 			}
 		}
 	}
 
-	return eventsCreated, eventsUpdated, rows.Err()
+	if err := rows.Err(); err != nil {
+		return eventsCreated, eventsUpdated, maxImportedTimestamp, err
+	}
+	return eventsCreated, eventsUpdated, maxImportedTimestamp, nil
 }
