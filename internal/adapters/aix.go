@@ -74,25 +74,27 @@ func (a *AixAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sync
 		}
 	}
 
-	// Ensure an AI "person" exists for this source (e.g. cursor AI).
-	aiPersonID, created, err := a.getOrCreateAIPerson(commsDB)
-	if err != nil {
-		return result, err
-	}
-	if created {
-		result.PersonsCreated++
-	}
-
 	// Look up me person if present (optional).
 	var mePersonID string
 	_ = commsDB.QueryRow("SELECT id FROM persons WHERE is_me = 1 LIMIT 1").Scan(&mePersonID)
 
-	eventsCreated, eventsUpdated, maxTS, err := a.syncMessages(ctx, aixDB, commsDB, lastSync, aiPersonID, mePersonID)
+	// Ensure "me" has an identity that indicates presence on this source (helps cross-platform views).
+	if mePersonID != "" {
+		if err := a.ensureMeIdentity(commsDB, mePersonID); err != nil {
+			return result, err
+		}
+	}
+
+	// Cache AI persons per model to avoid repeated DB round-trips.
+	aiByModel := make(map[string]string) // modelKey -> personID
+
+	eventsCreated, eventsUpdated, maxTS, personsCreated, err := a.syncMessages(ctx, aixDB, commsDB, lastSync, mePersonID, aiByModel)
 	if err != nil {
 		return result, err
 	}
 	result.EventsCreated = eventsCreated
 	result.EventsUpdated = eventsUpdated
+	result.PersonsCreated += personsCreated
 
 	// Update watermark to max imported event timestamp (seconds)
 	watermark := lastSync
@@ -112,10 +114,27 @@ func (a *AixAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sync
 	return result, nil
 }
 
-func (a *AixAdapter) getOrCreateAIPerson(commsDB *sql.DB) (personID string, created bool, err error) {
-	// Map each AI source to a stable identity key.
+func (a *AixAdapter) ensureMeIdentity(commsDB *sql.DB, mePersonID string) error {
+	// This is intentionally coarse; Eve whoami is the canonical rich identity seed.
+	identityChannel := "aix"
+	identityIdentifier := fmt.Sprintf("aix:%s:user", a.source)
+	now := time.Now().Unix()
+	identityID := uuid.New().String()
+	_, err := commsDB.Exec(`
+		INSERT INTO identities (id, person_id, channel, identifier, created_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(channel, identifier) DO UPDATE SET person_id = excluded.person_id
+	`, identityID, mePersonID, identityChannel, identityIdentifier, now)
+	if err != nil {
+		return fmt.Errorf("upsert me aix identity: %w", err)
+	}
+	return nil
+}
+
+func (a *AixAdapter) getOrCreateAIPerson(commsDB *sql.DB, modelKey string) (personID string, created bool, err error) {
+	// Map each (source, model) to a stable identity key.
 	identityChannel := "ai"
-	identityIdentifier := fmt.Sprintf("aix:%s", a.source)
+	identityIdentifier := fmt.Sprintf("aix:%s:model:%s", a.source, modelKey)
 
 	// Try lookup first
 	row := commsDB.QueryRow(`SELECT person_id FROM identities WHERE channel = ? AND identifier = ?`, identityChannel, identityIdentifier)
@@ -129,7 +148,8 @@ func (a *AixAdapter) getOrCreateAIPerson(commsDB *sql.DB) (personID string, crea
 	personID = uuid.New().String()
 	now := time.Now().Unix()
 	canonicalName := "AI Assistant"
-	displayName := fmt.Sprintf("%s AI", strings.ToUpper(a.source[:1])+a.source[1:])
+	sourceTitle := strings.ToUpper(a.source[:1]) + a.source[1:]
+	displayName := fmt.Sprintf("%s AI (%s)", sourceTitle, modelKey)
 
 	tx, err := commsDB.Begin()
 	if err != nil {
@@ -166,9 +186,9 @@ func (a *AixAdapter) syncMessages(
 	aixDB *sql.DB,
 	commsDB *sql.DB,
 	lastSyncSeconds int64,
-	aiPersonID string,
 	mePersonID string,
-) (created int, updated int, maxImportedTS int64, err error) {
+	aiByModel map[string]string,
+) (created int, updated int, maxImportedTS int64, personsCreated int, err error) {
 	_ = ctx
 
 	query := `
@@ -188,7 +208,7 @@ func (a *AixAdapter) syncMessages(
 
 	rows, err := aixDB.Query(query, a.source, lastSyncSeconds)
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("failed to query aix messages: %w", err)
+		return 0, 0, 0, 0, fmt.Errorf("failed to query aix messages: %w", err)
 	}
 	defer rows.Close()
 
@@ -202,10 +222,28 @@ func (a *AixAdapter) syncMessages(
 			model     sql.NullString
 		)
 		if err := rows.Scan(&messageID, &sessionID, &role, &content, &tsSec, &model); err != nil {
-			return created, updated, maxImportedTS, fmt.Errorf("scan aix message: %w", err)
+			return created, updated, maxImportedTS, personsCreated, fmt.Errorf("scan aix message: %w", err)
 		}
 		if tsSec > maxImportedTS {
 			maxImportedTS = tsSec
+		}
+
+		modelKey := "unknown"
+		if model.Valid && strings.TrimSpace(model.String) != "" {
+			modelKey = strings.TrimSpace(model.String)
+		}
+
+		aiPersonID, ok := aiByModel[modelKey]
+		if !ok {
+			pid, createdPerson, err := a.getOrCreateAIPerson(commsDB, modelKey)
+			if err != nil {
+				return created, updated, maxImportedTS, personsCreated, err
+			}
+			aiPersonID = pid
+			aiByModel[modelKey] = pid
+			if createdPerson {
+				personsCreated++
+			}
 		}
 
 		// Map to comms event semantics
@@ -234,7 +272,7 @@ func (a *AixAdapter) syncMessages(
 				thread_id = excluded.thread_id
 		`, eventID, tsSec, "cursor", string(contentTypesJSON), content.String, direction, threadID, a.Name(), messageID)
 		if err != nil {
-			return created, updated, maxImportedTS, fmt.Errorf("upsert event: %w", err)
+			return created, updated, maxImportedTS, personsCreated, fmt.Errorf("upsert event: %w", err)
 		}
 
 		// Determine if insert or update
@@ -266,9 +304,9 @@ func (a *AixAdapter) syncMessages(
 	}
 
 	if err := rows.Err(); err != nil {
-		return created, updated, maxImportedTS, err
+		return created, updated, maxImportedTS, personsCreated, err
 	}
-	return created, updated, maxImportedTS, nil
+	return created, updated, maxImportedTS, personsCreated, nil
 }
 
 func insertParticipant(db *sql.DB, eventID, personID, role string) error {

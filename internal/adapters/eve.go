@@ -44,7 +44,7 @@ func (e *EveAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sync
 	result := SyncResult{}
 
 	// Open Eve database (read-only)
-	eveDB, err := sql.Open("sqlite", "file:"+e.eveDBPath+"?mode=ro")
+	eveDB, err := sql.Open("sqlite", "file:"+e.eveDBPath+"?mode=ro&_busy_timeout=5000")
 	if err != nil {
 		return result, fmt.Errorf("failed to open Eve database: %w", err)
 	}
@@ -101,6 +101,15 @@ func (e *EveAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sync
 
 // syncContacts syncs Eve contacts to comms persons and identities
 func (e *EveAdapter) syncContacts(ctx context.Context, eveDB, commsDB *sql.DB) (int, error) {
+	_ = ctx
+
+	// Seed "me" from Eve's rich whoami info (authoritative identity set: phones/emails/handles).
+	// This is the key link that allows other adapters (aix/gmail/...) to attach to a cohesive user.
+	meCreated, err := e.syncWhoami(eveDB, commsDB)
+	if err != nil {
+		return 0, err
+	}
+
 	// Query contacts and their identifiers from Eve
 	rows, err := eveDB.Query(`
 		SELECT
@@ -115,11 +124,11 @@ func (e *EveAdapter) syncContacts(ctx context.Context, eveDB, commsDB *sql.DB) (
 		ORDER BY c.id
 	`)
 	if err != nil {
-		return 0, fmt.Errorf("failed to query Eve contacts: %w", err)
+		return meCreated, fmt.Errorf("failed to query Eve contacts: %w", err)
 	}
 	defer rows.Close()
 
-	personsCreated := 0
+	personsCreated := meCreated
 	contactMap := make(map[int64]string) // Eve contact_id -> comms person_id
 
 	for rows.Next() {
@@ -193,6 +202,106 @@ func (e *EveAdapter) syncContacts(ctx context.Context, eveDB, commsDB *sql.DB) (
 	}
 
 	return personsCreated, rows.Err()
+}
+
+func (e *EveAdapter) syncWhoami(eveDB, commsDB *sql.DB) (personsCreated int, err error) {
+	// Find or create the comms "me" person.
+	var mePersonID string
+	_ = commsDB.QueryRow("SELECT id FROM persons WHERE is_me = 1 LIMIT 1").Scan(&mePersonID)
+
+	rows, err := eveDB.Query(`
+		SELECT
+			c.name,
+			c.nickname,
+			ci.identifier,
+			ci.type
+		FROM contacts c
+		LEFT JOIN contact_identifiers ci ON c.id = ci.contact_id
+		WHERE c.is_me = 1
+		ORDER BY c.id
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("failed to query Eve whoami: %w", err)
+	}
+	defer rows.Close()
+
+	var (
+		bestName        string
+		identifiersSeen bool
+	)
+
+	type ident struct {
+		channel    string
+		identifier string
+	}
+	var idents []ident
+
+	for rows.Next() {
+		var name, nickname, identifier, identifierType sql.NullString
+		if err := rows.Scan(&name, &nickname, &identifier, &identifierType); err != nil {
+			return 0, fmt.Errorf("failed to scan Eve whoami row: %w", err)
+		}
+
+		// Determine best canonical name candidate.
+		if bestName == "" {
+			if name.Valid && name.String != "" {
+				bestName = name.String
+			} else if nickname.Valid && nickname.String != "" {
+				bestName = nickname.String
+			}
+		}
+
+		if identifier.Valid && identifierType.Valid && identifier.String != "" && identifierType.String != "" {
+			identifiersSeen = true
+			idents = append(idents, ident{
+				channel:    identifierType.String,
+				identifier: identifier.String,
+			})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("error iterating Eve whoami: %w", err)
+	}
+
+	// If Eve has no whoami rows, do nothing.
+	if bestName == "" && !identifiersSeen {
+		return 0, nil
+	}
+	if bestName == "" {
+		bestName = "Me"
+	}
+
+	now := time.Now().Unix()
+	if mePersonID == "" {
+		mePersonID = uuid.New().String()
+		if _, err := commsDB.Exec(`
+			INSERT INTO persons (id, canonical_name, is_me, created_at, updated_at)
+			VALUES (?, ?, 1, ?, ?)
+		`, mePersonID, bestName, now, now); err != nil {
+			return 0, fmt.Errorf("failed to create me person: %w", err)
+		}
+		personsCreated++
+	} else {
+		// Best-effort: keep canonical_name fresh if it was a placeholder.
+		_, _ = commsDB.Exec(`UPDATE persons SET canonical_name = ?, updated_at = ? WHERE id = ? AND (canonical_name = '' OR canonical_name = 'Me' OR canonical_name = 'Unknown')`,
+			bestName, now, mePersonID,
+		)
+	}
+
+	// Upsert all whoami identifiers onto the comms me person.
+	for _, it := range idents {
+		identityID := uuid.New().String()
+		_, err := commsDB.Exec(`
+			INSERT INTO identities (id, person_id, channel, identifier, created_at)
+			VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT(channel, identifier) DO UPDATE SET person_id = excluded.person_id
+		`, identityID, mePersonID, it.channel, it.identifier, now)
+		if err != nil {
+			return personsCreated, fmt.Errorf("failed to upsert whoami identity (%s:%s): %w", it.channel, it.identifier, err)
+		}
+	}
+
+	return personsCreated, nil
 }
 
 // syncMessages syncs Eve messages to comms events
