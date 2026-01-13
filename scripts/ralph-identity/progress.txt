@@ -1,0 +1,71 @@
+# Ralph Progress Log — Identity Resolution
+Started: (pending Eve migration completion)
+
+## Codebase Patterns
+- Use raw SQL, not ORM (user rule)
+- No __init__.py files needed
+- modernc.org/sqlite for pure-Go SQLite
+- JSON output support via --json flag on all commands
+- XDG-compliant paths for config/data
+- UUID generation with github.com/google/uuid
+- Time as Unix timestamps (INTEGER)
+- Existing packages to reference:
+  - internal/identify/ - existing identity resolution code
+  - internal/db/db.go - database connection patterns
+  - internal/query/ - query building patterns
+  - internal/adapters/ - data sync patterns
+
+## Key Files
+- docs/IDENTITY_RESOLUTION_PLAN.md - the spec
+- prompts/pii-extraction-v1.prompt.md - extraction prompt
+- internal/db/schema.sql - current schema
+- internal/identify/suggestions.go - existing merge suggestions (to extend)
+
+## Design Decisions
+1. Identifier-centric resolution: O(F) not O(P²)
+   - GROUP BY fact_value, find collisions
+   - Don't compare all person pairs
+
+2. Hard vs soft identifiers:
+   - Hard: 1 match = merge candidate (email, phone, full_name)
+   - Compound: all parts match = merge (name+birthdate, name+employer+city)
+   - Soft: accumulate weighted scores (employer 0.20, location 0.15, etc.)
+   
+3. Professional distinction:
+   - employer_current = work FOR someone
+   - business_owned = OWN a business
+   - business_role = Owner, Partner, Founder
+
+4. Integration with analysis framework:
+   - PII extraction is an analysis_type
+   - Output to facets table, sync to person_facts
+   - Leverages existing conversations and analysis_runs
+
+5. Unattributed facts:
+   - Phone/email sent without context goes to unattributed_facts
+   - Can be resolved later when context available
+
+6. Schema evolution pattern:
+   - Use CREATE TABLE IF NOT EXISTS for idempotent migrations
+   - Increment schema_version with INSERT OR IGNORE
+   - Build & init must succeed before committing
+
+---
+
+## 2026-01-13 - [US-030] Add person_facts table to schema
+- Added person_facts table to internal/db/schema.sql
+- Includes all fields: id, person_id FK, category, fact_type, fact_value
+- Confidence scoring (0.0-1.0) and source attribution
+- Three classification flags: is_sensitive, is_identifier, is_hard_identifier
+- Evidence field stores quote from original message
+- UNIQUE constraint on (person_id, category, fact_type, fact_value) prevents duplicates
+- Four indexes: person_id, (category, fact_type), fact_value, and conditional hard_id index
+- Schema version incremented from 3 to 4
+- Files changed: internal/db/schema.sql
+- **Learnings:**
+  - WHERE clause on CREATE INDEX is supported in SQLite for conditional indexes
+  - This enables efficient queries on hard identifiers without scanning all facts
+  - Schema version uses INSERT OR IGNORE, only applies on fresh DBs (existing stay at previous version)
+  - comms init is idempotent - safe to run multiple times
+
+---

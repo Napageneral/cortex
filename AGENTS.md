@@ -221,6 +221,12 @@ make build
 - Attachment content_hash enables deduplication - same file attached to multiple events
 - Attachment media_type (image/video/audio/document/sticker/link) provides queryable categorization
 - Attachment metadata_json stores format-specific data (dimensions, duration) without schema changes
+- Person facts table stores identity graph data with category/fact_type/fact_value structure
+- Person facts include confidence scores, source attribution, and evidence quotes
+- Person facts use UNIQUE constraint on (person_id, category, fact_type, fact_value) to prevent duplicates
+- Hard identifier facts flagged with is_hard_identifier=1 for O(F) collision detection
+- Conditional indexes (WHERE clause) enable efficient hard identifier queries without full table scan
+- Schema version managed via INSERT OR IGNORE - only applies on fresh installations
 
 ## Schema Quick Reference
 
@@ -232,6 +238,7 @@ event_participants  -- Who was in each event
 threads         -- Chat/channel/thread metadata
 attachments     -- Media/file metadata for events
 tags            -- Soft tags on events
+person_facts    -- Rich identity graph data (PII extraction results)
 ```
 
 See `internal/db/schema.sql` for full DDL.
