@@ -218,6 +218,43 @@ CREATE INDEX IF NOT EXISTS idx_merge_suggestions_confidence ON merge_suggestions
 CREATE INDEX IF NOT EXISTS idx_merge_suggestions_person1 ON merge_suggestions(person1_id);
 CREATE INDEX IF NOT EXISTS idx_merge_suggestions_person2 ON merge_suggestions(person2_id);
 
+-- Person facts: Rich identity graph data extracted from conversations
+-- Stores all PII and enrichment data with attribution and confidence
+CREATE TABLE IF NOT EXISTS person_facts (
+    id TEXT PRIMARY KEY,
+    person_id TEXT NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+
+    -- What fact
+    category TEXT NOT NULL,         -- 'core_identity', 'contact', 'professional', etc.
+    fact_type TEXT NOT NULL,        -- 'email_work', 'full_name', 'business_owned', etc.
+    fact_value TEXT NOT NULL,       -- the actual value
+
+    -- Confidence & Source
+    confidence REAL DEFAULT 0.5,    -- 0.0-1.0
+    source_type TEXT NOT NULL,      -- 'self_disclosed', 'mentioned', 'inferred', 'signature'
+    source_channel TEXT,            -- 'imessage', 'gmail', etc.
+    source_conversation_id TEXT,    -- conversation where extracted
+    source_facet_id TEXT,           -- link to facets table
+    evidence TEXT,                  -- quote from message
+
+    -- Classification
+    is_sensitive INTEGER DEFAULT 0,       -- SSN, medical, financial
+    is_identifier INTEGER DEFAULT 0,      -- used for identity matching
+    is_hard_identifier INTEGER DEFAULT 0, -- triggers instant merge consideration
+
+    -- Timestamps
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+
+    UNIQUE(person_id, category, fact_type, fact_value)
+);
+
+CREATE INDEX IF NOT EXISTS idx_person_facts_person ON person_facts(person_id);
+CREATE INDEX IF NOT EXISTS idx_person_facts_type ON person_facts(category, fact_type);
+CREATE INDEX IF NOT EXISTS idx_person_facts_value ON person_facts(fact_value);
+CREATE INDEX IF NOT EXISTS idx_person_facts_hard_id ON person_facts(fact_type, fact_value)
+    WHERE is_hard_identifier = 1;
+
 -- Insert initial schema version
 INSERT OR IGNORE INTO schema_version (version, applied_at)
-VALUES (3, strftime('%s', 'now'));
+VALUES (4, strftime('%s', 'now'));
