@@ -28,6 +28,11 @@ Project: comms — Unified Communications Cartographer
 - Gmail sync: Use 'after:YYYY/MM/DD' query format, timestamps in milliseconds (divide by 1000)
 - Email parsing: Handle "Name <email>" format by extracting text between < and >
 - Type assertions: Use two-value ok pattern when reading map[string]interface{}
+- Chunking: Chunker interface with Chunk(ctx, db, definitionID) method for pluggable strategies
+- TimeGapChunker: Split events by time gaps with configurable threshold and scope (thread/channel)
+- chunk.CreateDefinition: Idempotent - returns existing ID if definition name already exists
+- Conversations: Denormalized channel/thread_id fields enable efficient queries, NULL for cross-boundary
+- conversation_events.position: 1-indexed ordering within conversation for stable event retrieval
 
 ## Key Files
 - cmd/comms/main.go — CLI entry point
@@ -633,4 +638,67 @@ Project: comms — Unified Communications Cartographer
   - Check for existing attachment ID before insert to distinguish created vs updated counts
   - Attachment sync uses same incremental sync watermark as messages for consistency
   - Deterministic attachment IDs (adapter:guid) enable consistent references across syncs
+
+---
+
+## 2026-01-13 - US-024 Time-gap conversation chunking for iMessage
+- Created internal/chunk package with Chunker interface for pluggable chunking strategies
+- Implemented TimeGapChunker with configurable gap threshold (seconds) and scope (thread/channel)
+- Added comms chunk command with three subcommands: list, seed, run
+- chunk seed creates default imessage_3hr definition (3-hour gap, thread-scoped)
+- chunk list displays all conversation definitions with strategy and config
+- chunk run executes chunking for a named definition, creating conversations and event mappings
+- Chunking splits events by time gaps, creates conversation records with time bounds and stats
+- conversation_events mapping uses 1-indexed position field for ordering
+- Events queried in timestamp order, grouped by thread_id (or globally if scope=channel)
+- Each conversation transaction inserts conversation + all event mappings atomically
+- Verified go build succeeds and comms chunk --help displays correctly
+- **Files changed:**
+  - internal/chunk/chunk.go (new - 373 lines)
+  - cmd/comms/main.go (added chunk command with list/seed/run subcommands)
+  - AGENTS.md (added chunking usage examples and patterns to Common Operations and Gotchas)
+  - scripts/ralph/prd.json (marked US-024 as passing)
+- **Learnings:**
+  - Chunker interface enables pluggable strategies: Chunk(ctx, db, definitionID) method
+  - TimeGapChunker supports two scopes: "thread" (per-thread chunking) or "channel" (global chunking)
+  - splitByTimeGap iterates events in timestamp order, starts new conversation when gap exceeds threshold
+  - conversation records include denormalized channel and thread_id for efficient querying
+  - NULL channel/thread_id values support cross-channel and cross-thread conversations
+  - CreateDefinition is idempotent - returns existing ID if definition name already exists
+  - GetChunkerForDefinition uses strategy field to instantiate appropriate chunker type
+  - config_json marshaled as JSON, unmarshaled into strategy-specific config structs
+  - Event struct in chunk package minimal - only id, timestamp, thread_id, channel needed
+  - Conversation.events slice accumulates events before bulk insert in transaction
+  - position field in conversation_events enables ordered retrieval without timestamp sorting
+  - Same events can belong to multiple conversations (different definitions chunk differently)
+  - chunk run accepts definition name as positional arg or --definition flag for flexibility
+  - ListDefinitions returns all definitions ordered by name for consistent display
+
+---
+
+## 2026-01-13 - US-025 Thread-based conversation chunking for Gmail
+- Implemented ThreadChunker in internal/chunk package following Chunker interface
+- ThreadChunker creates one conversation per unique thread_id (no time-gap logic)
+- Added ThreadConfig struct (empty - no additional config needed for thread-based chunking)
+- Updated chunk seed command to create gmail_thread definition alongside imessage_3hr
+- Added "thread" strategy case to GetChunkerForDefinition switch statement
+- Thread-based chunking queries events WHERE thread_id IS NOT NULL
+- Events grouped by thread_id in map, then one conversation created per group
+- Verified go build succeeds
+- **Files changed:**
+  - internal/chunk/chunk.go (added ThreadChunker, ThreadConfig, insertConversation method)
+  - cmd/comms/main.go (added gmail_thread definition to chunk seed command)
+  - AGENTS.md (added ThreadChunker patterns to Common Operations and Gotchas)
+  - scripts/ralph/prd.json (marked US-025 as passing)
+- **Learnings:**
+  - ThreadChunker is simpler than TimeGapChunker - no gap calculation, just group by thread_id
+  - Thread-based chunking perfect for Gmail since Google API provides native thread_id
+  - Empty config struct (ThreadConfig{}) is valid - marshals to "{}" in JSON
+  - Query filters WHERE thread_id IS NOT NULL to exclude events without thread metadata
+  - eventsByThread map accumulates events before creating conversations (same pattern as TimeGapChunker)
+  - insertConversation method for ThreadChunker is nearly identical to TimeGapChunker version
+  - conversation.thread_id field always populated for thread-based chunking (not NULL)
+  - GetChunkerForDefinition switch statement is the registry of available chunking strategies
+  - chunk seed command now creates 2 definitions: imessage_3hr (time_gap) and gmail_thread (thread)
+  - Strategy field in conversation_definitions table determines which chunker to instantiate
 

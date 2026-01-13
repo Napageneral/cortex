@@ -142,7 +142,7 @@
         "comms chunk --definition imessage_3hr creates conversations"
       ],
       "priority": 9,
-      "passes": false,
+      "passes": true,
       "notes": "Port from Eve internal/etl/conversations.go. Strategy='time_gap', scope by thread."
     },
     {
@@ -157,7 +157,7 @@
         "comms chunk --definition gmail_thread creates conversations"
       ],
       "priority": 10,
-      "passes": false,
+      "passes": true,
       "notes": "Gmail already has thread_id from API. One conversation per thread."
     }
   ]
