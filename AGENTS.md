@@ -234,6 +234,13 @@ make build
 - conversation_events.position tracks order within conversation (1-indexed)
 - Same events can belong to multiple conversations with different definitions (e.g., 90min vs 3hr gaps)
 - Events do NOT have conversation_id FK - use conversation_events mapping for flexibility
+- Analysis framework: analysis_types define LLM-based analyses, analysis_runs track execution, facets store extracted values
+- Analysis types support two output modes: structured (extracts to facets table) and freeform (stores in output_text)
+- facets_config_json defines extraction rules using json_path for structured analyses
+- Facets are queryable values extracted from LLM output: entities, topics, emotions, PII, etc.
+- No raw LLM JSON stored - facets ARE the parsed output (reconstructable if needed)
+- UNIQUE(analysis_type_id, conversation_id) ensures one analysis run per conversation per type
+- Facets have CASCADE delete on analysis_run_id and conversation_id for cleanup
 
 ## Schema Quick Reference
 
@@ -251,6 +258,9 @@ merge_events    -- Identity merge proposals and execution tracking
 conversation_definitions  -- HOW to chunk events into conversations
 conversations   -- Chunked groups of events (time-gap, thread-based, etc.)
 conversation_events  -- Mapping table: which events belong to which conversations
+analysis_types  -- Analysis definitions (prompt, output schema, facet extraction rules)
+analysis_runs   -- Execution tracking per (analysis_type, conversation) pair
+facets          -- Extracted queryable values from structured analyses
 ```
 
 See `internal/db/schema.sql` for full DDL.

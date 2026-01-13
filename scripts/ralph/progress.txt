@@ -464,3 +464,55 @@ Project: comms — Unified Communications Cartographer
   - source_id preserves original attachment ID from source system for idempotent imports
   - Schema version incremented in INSERT OR IGNORE statement at end of schema.sql
   - Table comments match design document for clarity
+
+---
+
+## 2026-01-13 - US-018 Add conversation abstraction tables to schema
+- Added conversation_definitions table to define chunking strategies (time_gap, thread, session, daily, persona_pair, custom)
+- Added conversations table to store chunked groups of events with time bounds and stats
+- Added conversation_events mapping table with position tracking for event ordering
+- Incremented schema version from 6 to 7
+- Verified go build succeeds and comms init applies schema without error
+- **Files changed:**
+  - internal/db/schema.sql (added three conversation tables, indexes, incremented version to 7)
+  - AGENTS.md (added conversation patterns to Gotchas and updated Schema Quick Reference)
+  - scripts/ralph/prd.json (marked US-018 as passing)
+  - scripts/ralph/progress.txt (added US-018 learnings)
+- **Learnings:**
+  - Conversation abstraction uses mapping table pattern - events remain immutable with no conversation_id FK
+  - conversation_definitions.config_json stores strategy-specific parameters (e.g., gap_seconds for time_gap)
+  - Conversations can span multiple threads/channels by setting channel=NULL and thread_id=NULL
+  - Same events can belong to multiple conversations with different chunking strategies
+  - conversation_events.position field (1-indexed) maintains order within conversation
+  - Foreign key CASCADE on conversation_events ensures cleanup when conversation deleted
+  - Indexes on definition_id, channel, thread_id, and time range support common query patterns
+  - Design follows schema document section 5 exactly - flexible, queryable, no event mutation required
+  - Three tables work together: definitions (how to chunk) → conversations (chunks) → conversation_events (membership)
+
+---
+
+## 2026-01-13 - US-019 Add analysis framework tables to schema
+- Added analysis_types table to define LLM-based analyses with prompt templates and output configuration
+- Added analysis_runs table to track execution per (analysis_type, conversation) pair
+- Added facets table to store extracted queryable values from structured analyses
+- Created comprehensive indexes for type, conversation, status, facet_type+value, person_id, and value
+- Incremented schema version from 7 to 8
+- Verified go build succeeds
+- **Files changed:**
+  - internal/db/schema.sql (added three analysis tables with indexes, incremented version to 8)
+  - scripts/ralph/prd.json (marked US-019 as passing)
+  - AGENTS.md (added analysis framework patterns to Gotchas and updated Schema Quick Reference)
+  - scripts/ralph/progress.txt (added US-019 learnings)
+- **Learnings:**
+  - Analysis framework supports two output modes: structured (extracts to facets) and freeform (stores in output_text)
+  - facets_config_json defines extraction rules using json_path for structured analyses (NULL for freeform)
+  - No raw LLM JSON completion storage - facets ARE the parsed output (saves storage, simplifies queries)
+  - UNIQUE(analysis_type_id, conversation_id) constraint ensures one analysis run per conversation per type
+  - Facets table has CASCADE delete on both analysis_run_id and conversation_id for automatic cleanup
+  - person_id on facets allows attribution: "who mentioned this entity/topic"
+  - confidence and metadata_json fields support nuanced extraction results
+  - Five indexes on facets table enable efficient queries by type+value, conversation, analysis run, person, and value
+  - Design follows schema document section 6 exactly - generic, extensible, queryable without schema migrations
+  - Adding new analysis types requires only INSERT into analysis_types, no schema changes
+  - analysis_runs.status tracks lifecycle: pending → running → completed/failed/blocked
+  - retry_count and error_message fields support robust error handling and retry logic

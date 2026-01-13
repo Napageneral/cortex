@@ -47,7 +47,7 @@
         "go build succeeds"
       ],
       "priority": 3,
-      "passes": false,
+      "passes": true,
       "notes": "See docs/SCHEMA_DESIGN_ANALYSIS.md section 5. Events do NOT get conversation_id FK."
     },
     {
@@ -62,7 +62,7 @@
         "go build succeeds"
       ],
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "notes": "See docs/SCHEMA_DESIGN_ANALYSIS.md section 6"
     },
     {

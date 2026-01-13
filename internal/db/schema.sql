@@ -357,6 +357,85 @@ CREATE TABLE IF NOT EXISTS conversation_events (
 
 CREATE INDEX IF NOT EXISTS idx_conversation_events_event ON conversation_events(event_id);
 
+-- Analysis types: defines what kind of analysis this is
+CREATE TABLE IF NOT EXISTS analysis_types (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,           -- "convo_all_v1", "pii_extraction_v1", "summary_v1"
+    version TEXT NOT NULL,               -- "1.0.0"
+    description TEXT,
+
+    -- Output type
+    output_type TEXT NOT NULL,           -- "structured", "freeform"
+
+    -- For structured outputs: what facets to extract
+    -- NULL for freeform analyses
+    facets_config_json TEXT,             -- Extraction rules
+
+    -- Prompt (assuming all analyses are LLM-based)
+    prompt_template TEXT NOT NULL,       -- The prompt template with {conversation_text} placeholder
+    model TEXT,                          -- "gemini-2.0-flash-thinking", etc.
+
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+-- Analysis runs: one per (analysis_type, conversation) pair
+CREATE TABLE IF NOT EXISTS analysis_runs (
+    id TEXT PRIMARY KEY,
+    analysis_type_id TEXT NOT NULL REFERENCES analysis_types(id),
+    conversation_id TEXT NOT NULL REFERENCES conversations(id),
+
+    status TEXT NOT NULL,                -- "pending", "running", "completed", "failed", "blocked"
+
+    -- Timing
+    started_at INTEGER,
+    completed_at INTEGER,
+
+    -- For freeform analyses: store the text output
+    output_text TEXT,                    -- Markdown, plain text, whatever the LLM produced
+
+    -- Error handling
+    error_message TEXT,
+    blocked_reason TEXT,
+    retry_count INTEGER DEFAULT 0,
+
+    created_at INTEGER NOT NULL,
+
+    UNIQUE(analysis_type_id, conversation_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_analysis_runs_type ON analysis_runs(analysis_type_id);
+CREATE INDEX IF NOT EXISTS idx_analysis_runs_conversation ON analysis_runs(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_analysis_runs_status ON analysis_runs(status);
+
+-- Facets: extracted queryable values from structured analyses
+CREATE TABLE IF NOT EXISTS facets (
+    id TEXT PRIMARY KEY,
+    analysis_run_id TEXT NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+
+    -- What kind of facet
+    facet_type TEXT NOT NULL,            -- "entity", "topic", "emotion", "pii_email", "summary", etc.
+
+    -- The extracted value
+    value TEXT NOT NULL,                 -- "Grace", "travel", "joy", "grace@example.com"
+
+    -- Attribution (optional - who mentioned this)
+    person_id TEXT REFERENCES persons(id),
+
+    -- Confidence/metadata
+    confidence REAL,
+    metadata_json TEXT,                  -- Additional context
+
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_facets_type_value ON facets(facet_type, value);
+CREATE INDEX IF NOT EXISTS idx_facets_conversation ON facets(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_facets_analysis_run ON facets(analysis_run_id);
+CREATE INDEX IF NOT EXISTS idx_facets_person ON facets(person_id);
+CREATE INDEX IF NOT EXISTS idx_facets_value ON facets(value);
+
 -- Insert initial schema version
 INSERT OR IGNORE INTO schema_version (version, applied_at)
-VALUES (7, strftime('%s', 'now'));
+VALUES (8, strftime('%s', 'now'));
