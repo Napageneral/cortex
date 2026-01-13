@@ -150,14 +150,15 @@ make build
 ### Chunking conversations
 
 ```bash
-# Seed default conversation definitions
+# Seed default conversation definitions (creates imessage_3hr and gmail_thread)
 comms chunk seed
 
 # List conversation definitions
 comms chunk list
 
 # Run chunking for a definition
-comms chunk run imessage_3hr
+comms chunk run imessage_3hr       # Time-gap chunking for iMessage (3-hour gaps)
+comms chunk run gmail_thread       # Thread-based chunking for Gmail
 comms chunk run --definition gmail_thread
 
 # JSON output
@@ -281,6 +282,7 @@ comms chunk run imessage_3hr --json
 - Attachment sync happens after messages sync, uses same watermark for incremental sync
 - Chunking strategies: time_gap (gaps in time), thread (thread boundaries), session, daily, persona_pair, custom
 - TimeGapChunker supports two scopes: "thread" (chunk within each thread) or "channel" (chunk across all events)
+- ThreadChunker creates one conversation per unique thread_id - perfect for Gmail with native threading
 - Conversations are created through conversation_definitions that specify strategy and config
 - chunk.CreateDefinition is idempotent - returns existing definition ID if name already exists
 - Chunker interface allows pluggable strategies - implement Chunk(ctx, db, definitionID) method
@@ -290,6 +292,8 @@ comms chunk run imessage_3hr --json
 - Time gap measured in seconds - 10800 = 3 hours, 5400 = 90 minutes
 - Events are queried in timestamp order and grouped by thread (or globally) before chunking
 - Each conversation transaction inserts conversation record and all conversation_events mappings atomically
+- Thread-based chunking requires events to have thread_id set - filters WHERE thread_id IS NOT NULL
+- GetChunkerForDefinition uses strategy field to instantiate correct chunker type (time_gap, thread, etc.)
 
 ## Schema Quick Reference
 

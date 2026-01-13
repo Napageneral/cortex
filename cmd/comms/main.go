@@ -3803,14 +3803,29 @@ Examples:
 			created := 0
 
 			// Create imessage_3hr definition
-			config := chunk.TimeGapConfig{
+			timeGapConfig := chunk.TimeGapConfig{
 				GapSeconds: 10800, // 3 hours
 				Scope:      "thread",
 			}
-			_, err = chunk.CreateDefinition(ctx, database, "imessage_3hr", "imessage", "time_gap", config,
+			_, err = chunk.CreateDefinition(ctx, database, "imessage_3hr", "imessage", "time_gap", timeGapConfig,
 				"iMessage conversations with 3-hour gap threshold, scoped to threads")
 			if err != nil {
 				result := Result{OK: false, Message: fmt.Sprintf("Failed to create imessage_3hr: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			created++
+
+			// Create gmail_thread definition
+			threadConfig := chunk.ThreadConfig{}
+			_, err = chunk.CreateDefinition(ctx, database, "gmail_thread", "gmail", "thread", threadConfig,
+				"Gmail conversations using native thread boundaries")
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to create gmail_thread: %v", err)}
 				if jsonOutput {
 					printJSON(result)
 				} else {
@@ -3827,6 +3842,7 @@ Examples:
 			} else {
 				fmt.Printf("Created %d conversation definition(s):\n", created)
 				fmt.Println("  - imessage_3hr (3-hour gap, thread-scoped)")
+				fmt.Println("  - gmail_thread (native Gmail threads)")
 			}
 		},
 	}
