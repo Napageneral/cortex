@@ -239,6 +239,7 @@ threads         -- Chat/channel/thread metadata
 attachments     -- Media/file metadata for events
 tags            -- Soft tags on events
 person_facts    -- Rich identity graph data (PII extraction results)
+unattributed_facts  -- Ambiguous data that couldn't be attributed (resolvable later)
 ```
 
 See `internal/db/schema.sql` for full DDL.

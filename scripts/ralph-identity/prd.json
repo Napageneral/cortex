@@ -35,7 +35,7 @@
         "go build succeeds"
       ],
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "notes": "For ambiguous data like phone numbers sent without context"
     },
     {

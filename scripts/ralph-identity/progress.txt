@@ -69,3 +69,20 @@ Started: (pending Eve migration completion)
   - comms init is idempotent - safe to run multiple times
 
 ---
+
+## 2026-01-13 - [US-031] Add unattributed_facts table to schema
+- Added unattributed_facts table to internal/db/schema.sql
+- Captures ambiguous data extracted without clear attribution
+- Fields: id, fact_type, fact_value, shared_by_person_id, source_event_id, source_conversation_id
+- Resolution tracking: resolved_to_person_id, resolution_evidence, resolved_at
+- possible_attributions as JSON array for LLM guesses
+- Two indexes: (fact_type, fact_value) for lookups, conditional on unresolved
+- Schema version incremented from 4 to 5
+- Files changed: internal/db/schema.sql
+- **Learnings:**
+  - Unattributed facts enable graceful handling of "send this to 555-1234" cases
+  - Later context ("that's my sister's number") can resolve attribution
+  - Conditional index on NULL check is efficient for "unresolved only" queries
+  - Pattern: extraction creates unattributed fact, resolution moves to person_facts
+
+---
