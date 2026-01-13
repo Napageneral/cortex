@@ -516,3 +516,29 @@ Project: comms — Unified Communications Cartographer
   - Adding new analysis types requires only INSERT into analysis_types, no schema changes
   - analysis_runs.status tracks lifecycle: pending → running → completed/failed/blocked
   - retry_count and error_message fields support robust error handling and retry logic
+
+---
+
+## 2026-01-13 - US-020 Add embeddings table to schema
+- Added embeddings table to schema.sql with all required fields from design document
+- Created table with: id (PK), entity_type, entity_id, model, embedding_blob (BLOB), dimension, source_text_hash, created_at
+- Added UNIQUE constraint on (entity_type, entity_id, model) to allow same entity with multiple models
+- Created two indexes: idx_embeddings_entity (entity_type+entity_id) and idx_embeddings_model
+- Incremented schema version from 8 to 9
+- Verified go build succeeds
+- **Files changed:**
+  - internal/db/schema.sql (added embeddings table and indexes, incremented version to 9)
+  - scripts/ralph/prd.json (marked US-020 as passing)
+  - AGENTS.md (added embeddings patterns to Gotchas and updated Schema Quick Reference)
+  - scripts/ralph/progress.txt (added US-020 learnings)
+- **Learnings:**
+  - Embeddings table matches schema design document section 7 exactly
+  - Positioned embeddings table after analysis framework tables for logical grouping
+  - entity_type enum supports: event, conversation, facet, person, thread (any entity can be embedded)
+  - embedding_blob stores binary vector as little-endian float64 array (BLOB type in SQLite)
+  - dimension field records vector dimensionality (768, 1024, etc.) for proper deserialization
+  - source_text_hash enables change detection - can check if source changed and re-embed if needed
+  - UNIQUE(entity_type, entity_id, model) allows same entity embedded with different models side-by-side
+  - Two indexes optimize common access patterns: lookup by entity and filter by model
+  - Embeddings are independent from entities - no foreign keys, enables embedding anything
+  - Schema version incremented in INSERT OR IGNORE statement at end of schema.sql

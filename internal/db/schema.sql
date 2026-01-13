@@ -436,6 +436,30 @@ CREATE INDEX IF NOT EXISTS idx_facets_analysis_run ON facets(analysis_run_id);
 CREATE INDEX IF NOT EXISTS idx_facets_person ON facets(person_id);
 CREATE INDEX IF NOT EXISTS idx_facets_value ON facets(value);
 
+-- Embeddings: Vector embeddings for entities
+CREATE TABLE IF NOT EXISTS embeddings (
+    id TEXT PRIMARY KEY,
+
+    -- What is embedded
+    entity_type TEXT NOT NULL,           -- "event", "conversation", "facet", "person", "thread"
+    entity_id TEXT NOT NULL,             -- ID of the embedded entity
+
+    -- The embedding
+    model TEXT NOT NULL,                 -- "gemini-embedding-004", etc.
+    embedding_blob BLOB NOT NULL,        -- Binary vector (little-endian float64 array)
+    dimension INTEGER NOT NULL,          -- 768, 1024, etc.
+
+    -- Source text hash (for change detection / re-embedding)
+    source_text_hash TEXT,
+
+    created_at INTEGER NOT NULL,
+
+    UNIQUE(entity_type, entity_id, model)
+);
+
+CREATE INDEX IF NOT EXISTS idx_embeddings_entity ON embeddings(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_embeddings_model ON embeddings(model);
+
 -- Insert initial schema version
 INSERT OR IGNORE INTO schema_version (version, applied_at)
-VALUES (8, strftime('%s', 'now'));
+VALUES (9, strftime('%s', 'now'));

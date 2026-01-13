@@ -241,6 +241,11 @@ make build
 - No raw LLM JSON stored - facets ARE the parsed output (reconstructable if needed)
 - UNIQUE(analysis_type_id, conversation_id) ensures one analysis run per conversation per type
 - Facets have CASCADE delete on analysis_run_id and conversation_id for cleanup
+- Embeddings table: stores vector embeddings for any entity (event, conversation, facet, person, thread)
+- Embeddings indexed by (entity_type, entity_id, model) for fast lookup and deduplication
+- embedding_blob stores binary vector as little-endian float64 array
+- source_text_hash enables change detection for re-embedding when source changes
+- Multiple embedding models can coexist: same entity embedded with different models stored separately
 
 ## Schema Quick Reference
 
@@ -261,6 +266,7 @@ conversation_events  -- Mapping table: which events belong to which conversation
 analysis_types  -- Analysis definitions (prompt, output schema, facet extraction rules)
 analysis_runs   -- Execution tracking per (analysis_type, conversation) pair
 facets          -- Extracted queryable values from structured analyses
+embeddings      -- Vector embeddings for entities (events, conversations, facets, persons, threads)
 ```
 
 See `internal/db/schema.sql` for full DDL.
