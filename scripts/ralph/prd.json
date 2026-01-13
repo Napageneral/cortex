@@ -125,7 +125,7 @@
         "comms sync --adapter imessage imports reactions"
       ],
       "priority": 8,
-      "passes": false,
+      "passes": true,
       "notes": "Reactions are events with special content_type. See schema design section 3."
     },
     {

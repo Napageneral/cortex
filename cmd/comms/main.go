@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Napageneral/comms/internal/bus"
+	"github.com/Napageneral/comms/internal/chunk"
 	"github.com/Napageneral/comms/internal/config"
 	"github.com/Napageneral/comms/internal/db"
 	"github.com/Napageneral/comms/internal/identify"
@@ -3602,6 +3603,238 @@ Examples:
 	dbQueryCmd.Flags().Bool("write", false, "Allow mutation queries (INSERT, UPDATE, DELETE, etc.)")
 	dbCmd.AddCommand(dbQueryCmd)
 	rootCmd.AddCommand(dbCmd)
+
+	// chunk command
+	chunkCmd := &cobra.Command{
+		Use:   "chunk",
+		Short: "Chunk events into conversations",
+		Long:  "Create conversations by applying chunking strategies defined in conversation_definitions",
+	}
+
+	// chunk run command
+	chunkRunCmd := &cobra.Command{
+		Use:   "run",
+		Short: "Run chunking for a definition",
+		Long:  "Apply a conversation definition's chunking strategy to create conversations",
+		Args:  cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			type Result struct {
+				OK                   bool   `json:"ok"`
+				Message              string `json:"message,omitempty"`
+				DefinitionName       string `json:"definition_name,omitempty"`
+				ConversationsCreated int    `json:"conversations_created,omitempty"`
+				EventsProcessed      int    `json:"events_processed,omitempty"`
+				Duration             string `json:"duration,omitempty"`
+			}
+
+			database, err := db.Open()
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to open database: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			definitionName, _ := cmd.Flags().GetString("definition")
+
+			// If no definition specified, check for positional arg
+			if definitionName == "" && len(args) > 0 {
+				definitionName = args[0]
+			}
+
+			if definitionName == "" {
+				result := Result{OK: false, Message: "Definition name is required (use --definition or provide as argument)"}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			// Look up definition by name
+			var definitionID string
+			err = database.QueryRow("SELECT id FROM conversation_definitions WHERE name = ?", definitionName).Scan(&definitionID)
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Definition '%s' not found", definitionName)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			// Get chunker for this definition
+			chunker, err := chunk.GetChunkerForDefinition(context.Background(), database, definitionID)
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to create chunker: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			// Run chunking
+			chunkResult, err := chunker.Chunk(context.Background(), database, definitionID)
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Chunking failed: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			result := Result{
+				OK:                   true,
+				DefinitionName:       definitionName,
+				ConversationsCreated: chunkResult.ConversationsCreated,
+				EventsProcessed:      chunkResult.EventsProcessed,
+				Duration:             chunkResult.Duration.String(),
+			}
+
+			if jsonOutput {
+				printJSON(result)
+			} else {
+				fmt.Printf("Chunked %d events into %d conversations using '%s' in %s\n",
+					result.EventsProcessed, result.ConversationsCreated, result.DefinitionName, result.Duration)
+			}
+		},
+	}
+	chunkRunCmd.Flags().String("definition", "", "Conversation definition name")
+
+	// chunk list command
+	chunkListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List conversation definitions",
+		Long:  "Show all conversation definitions and their configurations",
+		Run: func(cmd *cobra.Command, args []string) {
+			type Result struct {
+				OK          bool                 `json:"ok"`
+				Message     string               `json:"message,omitempty"`
+				Definitions []chunk.Definition   `json:"definitions,omitempty"`
+			}
+
+			database, err := db.Open()
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to open database: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			definitions, err := chunk.ListDefinitions(context.Background(), database)
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to list definitions: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			result := Result{OK: true, Definitions: definitions}
+
+			if jsonOutput {
+				printJSON(result)
+			} else {
+				if len(definitions) == 0 {
+					fmt.Println("No conversation definitions found")
+					fmt.Println("\nRun 'comms chunk seed' to create default definitions")
+				} else {
+					fmt.Printf("Found %d conversation definition(s):\n\n", len(definitions))
+					for _, def := range definitions {
+						channel := def.Channel
+						if channel == "" {
+							channel = "all"
+						}
+						fmt.Printf("  %s\n", def.Name)
+						fmt.Printf("    Strategy: %s\n", def.Strategy)
+						fmt.Printf("    Channel:  %s\n", channel)
+						fmt.Printf("    Config:   %s\n", def.ConfigJSON)
+						if def.Description != "" {
+							fmt.Printf("    Description: %s\n", def.Description)
+						}
+						fmt.Println()
+					}
+				}
+			}
+		},
+	}
+
+	// chunk seed command
+	chunkSeedCmd := &cobra.Command{
+		Use:   "seed",
+		Short: "Seed default conversation definitions",
+		Long:  "Create default conversation definitions for common chunking strategies",
+		Run: func(cmd *cobra.Command, args []string) {
+			type Result struct {
+				OK      bool   `json:"ok"`
+				Message string `json:"message,omitempty"`
+				Created int    `json:"created,omitempty"`
+			}
+
+			database, err := db.Open()
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to open database: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			ctx := context.Background()
+			created := 0
+
+			// Create imessage_3hr definition
+			config := chunk.TimeGapConfig{
+				GapSeconds: 10800, // 3 hours
+				Scope:      "thread",
+			}
+			_, err = chunk.CreateDefinition(ctx, database, "imessage_3hr", "imessage", "time_gap", config,
+				"iMessage conversations with 3-hour gap threshold, scoped to threads")
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to create imessage_3hr: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			created++
+
+			result := Result{OK: true, Created: created}
+
+			if jsonOutput {
+				printJSON(result)
+			} else {
+				fmt.Printf("Created %d conversation definition(s):\n", created)
+				fmt.Println("  - imessage_3hr (3-hour gap, thread-scoped)")
+			}
+		},
+	}
+
+	chunkCmd.AddCommand(chunkListCmd)
+	chunkCmd.AddCommand(chunkSeedCmd)
+	chunkCmd.AddCommand(chunkRunCmd)
+	rootCmd.AddCommand(chunkCmd)
 
 	// TODO: Add more commands as per PRD
 

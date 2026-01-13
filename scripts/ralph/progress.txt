@@ -577,6 +577,34 @@ Project: comms — Unified Communications Cartographer
 
 ---
 
+---
+
+## 2026-01-13 - US-023 Eve adapter syncs reactions as events
+- Added syncReactions function to Eve adapter to sync reactions from Eve's reactions table
+- Created events with content_types=['reaction'] and emoji content (❤️, 👍, 👎, 😂, ‼️, ❓)
+- Used reply_to field to reference the original message that was reacted to
+- Mapped iMessage reaction_type integers to emojis via mapReactionType helper function
+- Added ReactionsCreated and ReactionsUpdated fields to SyncResult and AdapterResult structs
+- Updated sync output display to show reaction counts in CLI and JSON
+- Verified go build succeeds
+- **Files changed:**
+  - internal/adapters/eve.go (added syncReactions function and mapReactionType helper)
+  - internal/adapters/adapter.go (added ReactionsCreated/ReactionsUpdated to SyncResult)
+  - internal/sync/sync.go (added reaction counts to AdapterResult and job progress)
+  - cmd/comms/main.go (added reaction counts to sync output display)
+  - scripts/ralph/prd.json (marked US-023 as passing)
+- **Learnings:**
+  - Reactions follow same pattern as messages/attachments: query Eve, transaction, upsert
+  - Reactions are events with special content_type: ["reaction"]
+  - reply_to field creates reference chain from reaction to original message
+  - iMessage reaction_type enum: 2000=❤️, 2001=👍, 2002=👎, 2003=😂, 2004=‼️, 2005=❓
+  - Reactions use same incremental sync watermark as messages for consistency
+  - Reactions share contactMap and mePersonID for participant resolution
+  - Reaction sync happens after messages but uses message timestamps for watermark filtering
+  - Reaction direction determined by is_from_me flag (sent/received)
+  - Fallback for unknown reaction types uses "reaction:N" format for forward compatibility
+  - SyncResult and AdapterResult structs extended without breaking existing code
+
 ## 2026-01-13 - US-022 Eve adapter imports attachment metadata
 - Added syncAttachments function to Eve adapter to sync attachment metadata
 - Queries Eve attachments table joined with messages for incremental sync timestamp filtering

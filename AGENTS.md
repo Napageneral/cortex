@@ -145,6 +145,26 @@ make build
 ./comms version
 ```
 
+## Common Operations
+
+### Chunking conversations
+
+```bash
+# Seed default conversation definitions
+comms chunk seed
+
+# List conversation definitions
+comms chunk list
+
+# Run chunking for a definition
+comms chunk run imessage_3hr
+comms chunk run --definition gmail_thread
+
+# JSON output
+comms chunk list --json
+comms chunk run imessage_3hr --json
+```
+
 ## Gotchas
 
 - Eve's `eve.db` is the warehouse, `eve-queue.db` is the job queue — we only read `eve.db`
@@ -259,6 +279,17 @@ make build
 - deriveMediaType function categorizes mime_types into queryable media_type enum
 - SyncResult includes AttachmentsCreated and AttachmentsUpdated counts for tracking
 - Attachment sync happens after messages sync, uses same watermark for incremental sync
+- Chunking strategies: time_gap (gaps in time), thread (thread boundaries), session, daily, persona_pair, custom
+- TimeGapChunker supports two scopes: "thread" (chunk within each thread) or "channel" (chunk across all events)
+- Conversations are created through conversation_definitions that specify strategy and config
+- chunk.CreateDefinition is idempotent - returns existing definition ID if name already exists
+- Chunker interface allows pluggable strategies - implement Chunk(ctx, db, definitionID) method
+- conversation_events.position is 1-indexed for ordering events within a conversation
+- Same events can belong to multiple conversations with different chunking definitions
+- Conversations can span multiple threads/channels by setting thread_id=NULL and channel=NULL
+- Time gap measured in seconds - 10800 = 3 hours, 5400 = 90 minutes
+- Events are queried in timestamp order and grouped by thread (or globally) before chunking
+- Each conversation transaction inserts conversation record and all conversation_events mappings atomically
 
 ## Schema Quick Reference
 
