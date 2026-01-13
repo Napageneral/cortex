@@ -255,6 +255,30 @@ CREATE INDEX IF NOT EXISTS idx_person_facts_value ON person_facts(fact_value);
 CREATE INDEX IF NOT EXISTS idx_person_facts_hard_id ON person_facts(fact_type, fact_value)
     WHERE is_hard_identifier = 1;
 
+-- Unattributed facts: Facts extracted from conversations that couldn't be attributed to a specific person
+-- For example: phone numbers shared without context about whose number it is
+CREATE TABLE IF NOT EXISTS unattributed_facts (
+    id TEXT PRIMARY KEY,
+    fact_type TEXT NOT NULL,
+    fact_value TEXT NOT NULL,
+
+    shared_by_person_id TEXT REFERENCES persons(id),
+    source_event_id TEXT REFERENCES events(id),
+    source_conversation_id TEXT REFERENCES conversations(id),
+    context TEXT,
+    possible_attributions TEXT,     -- JSON array of guesses
+
+    resolved_to_person_id TEXT REFERENCES persons(id),
+    resolution_evidence TEXT,
+
+    created_at INTEGER NOT NULL,
+    resolved_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_unattributed_value ON unattributed_facts(fact_type, fact_value);
+CREATE INDEX IF NOT EXISTS idx_unattributed_unresolved ON unattributed_facts(resolved_to_person_id)
+    WHERE resolved_to_person_id IS NULL;
+
 -- Insert initial schema version
 INSERT OR IGNORE INTO schema_version (version, applied_at)
-VALUES (4, strftime('%s', 'now'));
+VALUES (5, strftime('%s', 'now'));
