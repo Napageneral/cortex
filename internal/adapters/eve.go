@@ -173,6 +173,19 @@ func (e *EveAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sync
 	}
 	result.Perf["attachments.total"] = time.Since(attachmentsStart).String()
 
+	// Sync reactions
+	reactionsStart := time.Now()
+	reactionsCreated, reactionsUpdated, perfReactions, err := e.syncReactions(ctx, eveDB, commsDB, lastSyncTimestamp, contactMap, mePersonID)
+	if err != nil {
+		return result, fmt.Errorf("failed to sync reactions: %w", err)
+	}
+	result.ReactionsCreated = reactionsCreated
+	result.ReactionsUpdated = reactionsUpdated
+	for k, v := range perfReactions {
+		result.Perf["reactions."+k] = v
+	}
+	result.Perf["reactions.total"] = time.Since(reactionsStart).String()
+
 	// Update sync watermark
 	// IMPORTANT: use the max imported event timestamp, NOT wall-clock time.
 	// This avoids skipping late-arriving/backfilled messages whose timestamp is older than "now".
@@ -958,6 +971,181 @@ func (e *EveAdapter) syncAttachments(ctx context.Context, eveDB, commsDB *sql.DB
 	}
 	perf["tx_commit"] = time.Since(txStart).String()
 	return created, updated, perf, nil
+}
+
+// syncReactions syncs Eve reactions to comms events
+func (e *EveAdapter) syncReactions(ctx context.Context, eveDB, commsDB *sql.DB, lastSyncTimestamp int64, contactMap map[int64]string, mePersonID string) (created int, updated int, perf map[string]string, err error) {
+	_ = ctx
+	perf = map[string]string{}
+
+	adapterPrefix := e.Name() + ":"
+	const contentTypesReaction = "[\"reaction\"]"
+
+	// Query reactions from Eve, joining with messages to get timestamp for incremental sync
+	query := `
+		SELECT
+			r.id,
+			r.guid,
+			r.original_message_guid,
+			r.sender_id,
+			r.chat_id,
+			r.reaction_type,
+			r.is_from_me,
+			CAST(strftime('%s', r.timestamp) AS INTEGER) as timestamp_unix,
+			COALESCE(c.chat_identifier, printf('chat_id:%d', r.chat_id)) as thread_id
+		FROM reactions r
+		LEFT JOIN chats c ON r.chat_id = c.id
+		WHERE CAST(strftime('%s', r.timestamp) AS INTEGER) > ?
+		ORDER BY timestamp_unix ASC
+	`
+
+	qStart := time.Now()
+	rows, err := eveDB.Query(query, lastSyncTimestamp)
+	if err != nil {
+		return 0, 0, perf, fmt.Errorf("failed to query Eve reactions: %w", err)
+	}
+	defer rows.Close()
+	perf["query"] = time.Since(qStart).String()
+
+	// Bulk write in a single transaction for SQLite performance
+	txStart := time.Now()
+	tx, err := commsDB.Begin()
+	if err != nil {
+		return 0, 0, perf, fmt.Errorf("begin comms tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmtInsertEvent, err := tx.Prepare(`
+		INSERT OR IGNORE INTO events (
+			id, timestamp, channel, content_types, content,
+			direction, thread_id, reply_to, source_adapter, source_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return 0, 0, perf, fmt.Errorf("prepare insert event: %w", err)
+	}
+	defer stmtInsertEvent.Close()
+
+	stmtUpdateEvent, err := tx.Prepare(`
+		UPDATE events
+		SET
+			content = ?,
+			content_types = ?,
+			thread_id = ?,
+			reply_to = ?
+		WHERE source_adapter = ?
+		  AND source_id = ?
+		  AND (
+		    content IS NOT ?
+		    OR content_types IS NOT ?
+		    OR thread_id IS NOT ?
+		    OR reply_to IS NOT ?
+		  )
+	`)
+	if err != nil {
+		return 0, 0, perf, fmt.Errorf("prepare update event: %w", err)
+	}
+	defer stmtUpdateEvent.Close()
+
+	stmtInsertParticipant, err := tx.Prepare(`
+		INSERT OR IGNORE INTO event_participants (event_id, person_id, role)
+		VALUES (?, ?, ?)
+	`)
+	if err != nil {
+		return 0, 0, perf, fmt.Errorf("prepare insert participant: %w", err)
+	}
+	defer stmtInsertParticipant.Close()
+
+	for rows.Next() {
+		var reactionID int64
+		var guid, originalMessageGuid, threadID string
+		var chatID, senderID sql.NullInt64
+		var reactionType sql.NullInt64
+		var timestamp int64
+		var isFromMe bool
+
+		if err := rows.Scan(&reactionID, &guid, &originalMessageGuid, &senderID, &chatID, &reactionType, &isFromMe, &timestamp, &threadID); err != nil {
+			return created, updated, perf, fmt.Errorf("failed to scan reaction row: %w", err)
+		}
+
+		// Map reaction_type integer to emoji
+		// iMessage reaction types: 2000=love, 2001=like, 2002=dislike, 2003=laugh, 2004=emphasis, 2005=question
+		reactionContent := mapReactionType(reactionType.Int64)
+
+		// Determine direction
+		direction := "received"
+		if isFromMe {
+			direction = "sent"
+		}
+
+		// Build reply_to: reference to the original message
+		replyTo := adapterPrefix + originalMessageGuid
+
+		// Deterministic event ID to avoid UUID cost and extra lookups
+		eventID := adapterPrefix + guid
+
+		res, err := stmtInsertEvent.Exec(
+			eventID, timestamp, "imessage", contentTypesReaction, reactionContent,
+			direction, threadID, replyTo, e.Name(), guid,
+		)
+		if err != nil {
+			return created, updated, perf, fmt.Errorf("insert reaction event: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n == 1 {
+			created++
+		} else {
+			res2, err := stmtUpdateEvent.Exec(
+				reactionContent, contentTypesReaction, threadID, replyTo,
+				e.Name(), guid,
+				reactionContent, contentTypesReaction, threadID, replyTo,
+			)
+			if err != nil {
+				return created, updated, perf, fmt.Errorf("update reaction event: %w", err)
+			}
+			if n2, _ := res2.RowsAffected(); n2 == 1 {
+				updated++
+			}
+		}
+
+		// Participants: use in-memory contactMap from syncContacts to avoid per-reaction DB lookups
+		if senderID.Valid {
+			if pid, ok := contactMap[senderID.Int64]; ok && pid != "" {
+				_, _ = stmtInsertParticipant.Exec(eventID, pid, "sender")
+			}
+		}
+		if isFromMe && mePersonID != "" {
+			_, _ = stmtInsertParticipant.Exec(eventID, mePersonID, "sender")
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return created, updated, perf, err
+	}
+	if err := tx.Commit(); err != nil {
+		return created, updated, perf, fmt.Errorf("commit comms tx: %w", err)
+	}
+	perf["tx_commit"] = time.Since(txStart).String()
+	return created, updated, perf, nil
+}
+
+// mapReactionType converts iMessage reaction_type integer to emoji
+func mapReactionType(reactionType int64) string {
+	switch reactionType {
+	case 2000:
+		return "❤️" // love
+	case 2001:
+		return "👍" // like
+	case 2002:
+		return "👎" // dislike
+	case 2003:
+		return "😂" // laugh
+	case 2004:
+		return "‼️" // emphasis
+	case 2005:
+		return "❓" // question
+	default:
+		return fmt.Sprintf("reaction:%d", reactionType) // fallback for unknown types
+	}
 }
 
 // deriveMediaType determines the media_type category from mime_type

@@ -574,3 +574,35 @@ Project: comms — Unified Communications Cartographer
   - Perf tracking includes separate timings for chats.query and chats.tx_commit
   - Thread sync is a separate transaction from message sync for independent failure handling
 
+
+---
+
+## 2026-01-13 - US-022 Eve adapter imports attachment metadata
+- Added syncAttachments function to Eve adapter to sync attachment metadata
+- Queries Eve attachments table joined with messages for incremental sync timestamp filtering
+- Creates attachment records with filename, mime_type, size_bytes from Eve
+- Implemented deriveMediaType function to categorize mime_types into media_type enum (image/video/audio/document/sticker)
+- Uses eve:// URI scheme for storage_uri as placeholder (actual file paths not available in Eve)
+- Stores UTI and is_sticker flag in metadata_json for iMessage-specific metadata
+- Added AttachmentsCreated and AttachmentsUpdated fields to SyncResult and AdapterResult structs
+- Updated sync output display to show attachment counts
+- Verified go build succeeds
+- **Files changed:**
+  - internal/adapters/eve.go (added syncAttachments function and deriveMediaType helper)
+  - internal/adapters/adapter.go (added AttachmentsCreated/AttachmentsUpdated to SyncResult)
+  - internal/sync/sync.go (added attachment counts to AdapterResult and job progress)
+  - cmd/comms/main.go (added attachment counts to sync output display)
+  - AGENTS.md (added attachment sync patterns to Gotchas)
+  - scripts/ralph/prd.json (marked US-022 as passing)
+- **Learnings:**
+  - Attachment sync follows same pattern as threads/messages sync: query, transaction, upsert
+  - deriveMediaType uses mime_type prefix matching for categorization (image/, video/, audio/, etc.)
+  - Stickers detected via is_sticker flag from Eve, take precedence over mime_type
+  - Attachment ID format consistent with event ID format: adapter_name:guid
+  - storage_uri placeholder allows future enhancement without schema changes
+  - metadata_json stores source-specific fields (uti for iMessage) without polluting schema
+  - ON CONFLICT(id) DO UPDATE enables idempotent attachment sync
+  - Check for existing attachment ID before insert to distinguish created vs updated counts
+  - Attachment sync uses same incremental sync watermark as messages for consistency
+  - Deterministic attachment IDs (adapter:guid) enable consistent references across syncs
+

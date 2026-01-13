@@ -109,7 +109,7 @@
         "comms sync --adapter imessage populates attachments table"
       ],
       "priority": 7,
-      "passes": false,
+      "passes": true,
       "notes": "Preserves attachment metadata that was previously lost"
     },
     {
