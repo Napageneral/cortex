@@ -279,6 +279,28 @@ CREATE INDEX IF NOT EXISTS idx_unattributed_value ON unattributed_facts(fact_typ
 CREATE INDEX IF NOT EXISTS idx_unattributed_unresolved ON unattributed_facts(resolved_to_person_id)
     WHERE resolved_to_person_id IS NULL;
 
+-- Merge events: Proposed and executed identity merges
+-- Tracks both pending suggestions and completed merges with full audit trail
+CREATE TABLE IF NOT EXISTS merge_events (
+    id TEXT PRIMARY KEY,
+    source_person_id TEXT NOT NULL REFERENCES persons(id),
+    target_person_id TEXT NOT NULL REFERENCES persons(id),
+    merge_type TEXT NOT NULL,        -- 'hard_identifier', 'compound', 'soft_accumulation', 'manual'
+
+    triggering_facts TEXT,           -- JSON array of facts that caused merge
+    similarity_score REAL,
+
+    status TEXT DEFAULT 'pending',   -- 'pending', 'accepted', 'rejected', 'executed'
+    auto_eligible INTEGER DEFAULT 0, -- whether this can auto-execute
+
+    created_at INTEGER NOT NULL,
+    resolved_at INTEGER,
+    resolved_by TEXT                 -- 'auto' or user identifier
+);
+
+CREATE INDEX IF NOT EXISTS idx_merge_events_status ON merge_events(status);
+CREATE INDEX IF NOT EXISTS idx_merge_events_persons ON merge_events(source_person_id, target_person_id);
+
 -- Insert initial schema version
 INSERT OR IGNORE INTO schema_version (version, applied_at)
-VALUES (5, strftime('%s', 'now'));
+VALUES (6, strftime('%s', 'now'));
