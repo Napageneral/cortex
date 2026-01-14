@@ -10,9 +10,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	stdsync "sync"
+	"syscall"
 	"time"
 
 	"github.com/Napageneral/comms/internal/adapters"
@@ -4751,6 +4753,7 @@ Examples:
 	var computeWorkers int
 	var computeAnalysisModel string
 	var computeEmbeddingModel string
+	var computePreload bool
 
 	// compute run - run the compute engine
 	computeRunCmd := &cobra.Command{
@@ -4790,28 +4793,72 @@ Examples:
 				fmt.Printf("TxBatchWriter enabled (batch size: %d)\n", cfg.BatchSize)
 			}
 			fmt.Printf("Analysis model: %s, Embedding model: %s\n", cfg.AnalysisModel, cfg.EmbeddingModel)
+			fmt.Println("Adaptive controllers: enabled (auto-RPM, adaptive concurrency)")
 
-			ctx := context.Background()
+			// Pre-encode conversations if requested (for maximum throughput)
+			if computePreload {
+				fmt.Println("Pre-loading conversations into cache...")
+				ctx := context.Background()
+				count, err := engine.PreloadConversations(ctx)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: preload failed: %v\n", err)
+				} else {
+					fmt.Printf("Pre-loaded %d conversations into cache\n", count)
+				}
+			}
+
+			// Setup signal handling for graceful shutdown
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			sigChan := make(chan os.Signal, 1)
+			signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+			go func() {
+				<-sigChan
+				fmt.Println("\nShutting down gracefully...")
+				cancel()
+			}()
+
+			startTime := time.Now()
 			stats, err := engine.Run(ctx)
+			duration := time.Since(startTime)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
 
-			// Get job metrics
+			// Get job metrics and controller stats
 			jobMetrics := engine.JobMetrics().Snapshot()
+			ctrlStats := engine.ControllerStats()
+			analysisRPM, embedRPM := engine.EffectiveRPM()
+
+			// Calculate throughput
+			throughput := 0.0
+			if duration.Seconds() > 0 {
+				throughput = float64(stats.Succeeded) / duration.Seconds()
+			}
 
 			if jsonOutput {
 				printJSON(map[string]any{
-					"ok":          true,
-					"succeeded":   stats.Succeeded,
-					"failed":      stats.Failed,
-					"skipped":     stats.Skipped,
-					"job_metrics": jobMetrics,
+					"ok":                     true,
+					"succeeded":              stats.Succeeded,
+					"failed":                 stats.Failed,
+					"skipped":                stats.Skipped,
+					"duration_sec":           duration.Seconds(),
+					"throughput_jobs_per_s":  throughput,
+					"workers":                cfg.WorkerCount,
+					"analysis_model":         cfg.AnalysisModel,
+					"embed_model":            cfg.EmbeddingModel,
+					"analysis_rpm_effective": analysisRPM,
+					"embed_rpm_effective":    embedRPM,
+					"job_metrics":            jobMetrics,
+					"controller_stats":       ctrlStats,
 				})
 			} else {
 				fmt.Printf("\nCompute complete: %d succeeded, %d failed, %d skipped\n",
 					stats.Succeeded, stats.Failed, stats.Skipped)
+				fmt.Printf("Duration: %.1fs, Throughput: %.2f jobs/sec\n", duration.Seconds(), throughput)
+				fmt.Printf("Effective RPM: analysis=%d, embedding=%d\n", analysisRPM, embedRPM)
 
 				// Print job metrics summary
 				if jobMetrics != nil {
@@ -4837,9 +4884,10 @@ Examples:
 			}
 		},
 	}
-	computeRunCmd.Flags().IntVarP(&computeWorkers, "workers", "w", 4, "Number of concurrent workers")
+	computeRunCmd.Flags().IntVarP(&computeWorkers, "workers", "w", 50, "Number of concurrent workers (default: 50 for Tier-3 keys)")
 	computeRunCmd.Flags().StringVar(&computeAnalysisModel, "analysis-model", "", "Gemini model for analysis")
 	computeRunCmd.Flags().StringVar(&computeEmbeddingModel, "embedding-model", "", "Gemini model for embeddings")
+	computeRunCmd.Flags().BoolVar(&computePreload, "preload", false, "Pre-load all conversations into cache for max throughput")
 
 	// compute enqueue - queue jobs
 	computeEnqueueCmd := &cobra.Command{

@@ -13,42 +13,94 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Napageneral/comms/internal/ratelimit"
 )
 
 const (
-	baseURL        = "https://generativelanguage.googleapis.com/v1beta"
-	maxRetries     = 5
-	initialBackoff = 500 * time.Millisecond
-	maxBackoff     = 30 * time.Second
-	defaultTimeout = 120 * time.Second
+	baseURL             = "https://generativelanguage.googleapis.com/v1beta"
+	maxRetries          = 5
+	initialBackoff      = 500 * time.Millisecond
+	maxBackoff          = 30 * time.Second
+	defaultTimeout      = 120 * time.Second
+	maxIdleConns        = 1000
+	maxConnsPerHost     = 1000
+	idleConnTimeout     = 90 * time.Second
+	tlsHandshakeTimeout = 10 * time.Second
 )
 
-// Client is a Gemini API client
+// Client is a Gemini API client with HTTP/2 support and retries
 type Client struct {
-	httpClient  *http.Client
-	apiKey      string
-	useADC      bool
-	accessToken string
-	tokenExpiry time.Time
-	tokenMu     sync.Mutex
+	httpClient      *http.Client
+	apiKey          string
+	analysisLimiter *ratelimit.LeakyBucket
+	embedLimiter    *ratelimit.LeakyBucket
+	useADC          bool
+	accessToken     string
+	tokenExpiry     time.Time
+	tokenMu         sync.Mutex
 }
 
-// NewClient creates a new Gemini client
+// NewClient creates a new Gemini client with HTTP/2 pooling and retries
 // If apiKey is empty, uses Application Default Credentials (gcloud auth)
 func NewClient(apiKey string) *Client {
+	transport := &http.Transport{
+		MaxIdleConns:        maxIdleConns,
+		MaxIdleConnsPerHost: maxConnsPerHost,
+		MaxConnsPerHost:     maxConnsPerHost,
+		IdleConnTimeout:     idleConnTimeout,
+		TLSHandshakeTimeout: tlsHandshakeTimeout,
+		ForceAttemptHTTP2:   true, // Enable HTTP/2
+	}
+
 	return &Client{
 		httpClient: &http.Client{
-			Timeout: defaultTimeout,
-			Transport: &http.Transport{
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 100,
-				IdleConnTimeout:     90 * time.Second,
-				ForceAttemptHTTP2:   true,
-			},
+			Transport: transport,
+			Timeout:   defaultTimeout,
 		},
 		apiKey: apiKey,
 		useADC: apiKey == "",
 	}
+}
+
+// SetAnalysisRPM sets a smooth rate limit for GenerateContent requests.
+// rpm<=0 disables rate limiting.
+func (c *Client) SetAnalysisRPM(rpm int) {
+	if c == nil {
+		return
+	}
+	if rpm <= 0 {
+		if c.analysisLimiter != nil {
+			c.analysisLimiter.Close()
+		}
+		c.analysisLimiter = nil
+		return
+	}
+	if c.analysisLimiter == nil {
+		c.analysisLimiter = ratelimit.NewLeakyBucketFromRPM(rpm)
+		return
+	}
+	c.analysisLimiter.SetRPM(rpm)
+}
+
+// SetEmbedRPM sets a smooth rate limit for EmbedContent requests.
+// rpm<=0 disables rate limiting.
+func (c *Client) SetEmbedRPM(rpm int) {
+	if c == nil {
+		return
+	}
+	if rpm <= 0 {
+		if c.embedLimiter != nil {
+			c.embedLimiter.Close()
+		}
+		c.embedLimiter = nil
+		return
+	}
+	if c.embedLimiter == nil {
+		c.embedLimiter = ratelimit.NewLeakyBucketFromRPM(rpm)
+		return
+	}
+	c.embedLimiter.SetRPM(rpm)
 }
 
 func (c *Client) getAccessToken() (string, error) {
@@ -171,6 +223,17 @@ type EmbedContentResponse struct {
 	Error     *APIError  `json:"error,omitempty"`
 }
 
+// BatchEmbedContentsRequest for batch embedding API
+type BatchEmbedContentsRequest struct {
+	Requests []EmbedContentRequest `json:"requests"`
+}
+
+// BatchEmbedContentsResponse for batch embedding API
+type BatchEmbedContentsResponse struct {
+	Embeddings []Embedding `json:"embeddings,omitempty"`
+	Error      *APIError   `json:"error,omitempty"`
+}
+
 type Embedding struct {
 	Values []float64 `json:"values"`
 }
@@ -186,6 +249,12 @@ func (c *Client) GenerateContent(ctx context.Context, model string, req *Generat
 
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// Wait for rate limiter if configured
+		if c.analysisLimiter != nil {
+			if err := c.analysisLimiter.Wait(ctx); err != nil {
+				return nil, err
+			}
+		}
 		if attempt > 0 {
 			backoff := calculateBackoff(attempt)
 			time.Sleep(backoff)
@@ -244,6 +313,12 @@ func (c *Client) EmbedContent(ctx context.Context, req *EmbedContentRequest) (*E
 
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// Wait for rate limiter if configured
+		if c.embedLimiter != nil {
+			if err := c.embedLimiter.Wait(ctx); err != nil {
+				return nil, err
+			}
+		}
 		if attempt > 0 {
 			backoff := calculateBackoff(attempt)
 			time.Sleep(backoff)
@@ -273,6 +348,80 @@ func (c *Client) EmbedContent(ctx context.Context, req *EmbedContentRequest) (*E
 		}
 
 		var result EmbedContentResponse
+		if err := json.Unmarshal(respBody, &result); err != nil {
+			return nil, fmt.Errorf("unmarshal response: %w", err)
+		}
+
+		if result.Error != nil {
+			if isRetryableStatus(result.Error.Code) {
+				lastErr = result.Error
+				continue
+			}
+			return nil, result.Error
+		}
+
+		return &result, nil
+	}
+
+	return nil, fmt.Errorf("max retries exceeded: %w", lastErr)
+}
+
+// BatchEmbedContents calls the Gemini batchEmbedContents API for batch embeddings
+func (c *Client) BatchEmbedContents(ctx context.Context, model string, requests []EmbedContentRequest) (*BatchEmbedContentsResponse, error) {
+	// Set model in each request (must be fully qualified with models/ prefix)
+	fullModel := "models/" + model
+	for i := range requests {
+		requests[i].Model = fullModel
+	}
+
+	batchReq := BatchEmbedContentsRequest{
+		Requests: requests,
+	}
+
+	body, err := json.Marshal(batchReq)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	endpoint := fmt.Sprintf("models/%s:batchEmbedContents", model)
+
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// Wait for rate limiter if configured
+		if c.embedLimiter != nil {
+			if err := c.embedLimiter.Wait(ctx); err != nil {
+				return nil, err
+			}
+		}
+		if attempt > 0 {
+			backoff := calculateBackoff(attempt)
+			time.Sleep(backoff)
+		}
+
+		httpReq, err := c.buildRequest(ctx, "POST", endpoint, body)
+		if err != nil {
+			return nil, err
+		}
+
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if isRetryableStatus(resp.StatusCode) {
+			lastErr = fmt.Errorf("status %d", resp.StatusCode)
+			continue
+		}
+
+		var result BatchEmbedContentsResponse
 		if err := json.Unmarshal(respBody, &result); err != nil {
 			return nil, fmt.Errorf("unmarshal response: %w", err)
 		}

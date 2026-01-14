@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Napageneral/comms/internal/gemini"
@@ -21,7 +22,7 @@ const (
 	JobTypeEmbedding = "embedding"
 )
 
-// Engine wraps the taskengine with comms-specific handlers
+// Engine wraps the taskengine with comms-specific handlers and adaptive control
 type Engine struct {
 	db           *sql.DB
 	geminiClient *gemini.Client
@@ -32,6 +33,21 @@ type Engine struct {
 
 	analysisModel  string
 	embeddingModel string
+
+	// Adaptive control components
+	sem               *AdaptiveSemaphore
+	adaptiveCtrl      *AdaptiveController
+	analysisRPMCtrl   *AutoRPMController
+	embedRPMCtrl      *AutoRPMController
+	cancelControllers context.CancelFunc
+
+	// Embedding batcher for high-throughput batch API calls
+	embeddingBatcher *EmbeddingsBatcher
+
+	// Pre-encoded conversation cache for high-throughput bulk processing
+	// Maps conversation_id -> encoded text
+	convTextCache   map[string]string
+	convTextCacheMu sync.RWMutex
 }
 
 // Config for the compute engine
@@ -41,20 +57,32 @@ type Config struct {
 	EmbeddingModel string
 	UseBatchWriter bool // Enable TxBatchWriter for better write performance
 	BatchSize      int
+
+	// RPM settings (0 = auto-probe)
+	AnalysisRPM int
+	EmbedRPM    int
 }
 
-// DefaultConfig returns sensible defaults
+// DefaultConfig returns sensible defaults optimized for high-throughput processing
+// Matching ChatStats parallelism settings for Tier-3 API keys
 func DefaultConfig() Config {
 	return Config{
-		WorkerCount:    4,
-		AnalysisModel:  "gemini-2.0-flash",
-		EmbeddingModel: "text-embedding-004",
+		// 50 workers to match ChatStats ThreadPoolExecutor(max_workers=50)
+		// With Tier-3 Gemini keys, this saturates the API nicely
+		WorkerCount: 50,
+		// Comms defaults (per project policy):
+		// - Analysis: Gemini 3 Flash Preview
+		// - Embeddings: Gemini Embedding 001
+		AnalysisModel:  "gemini-3-flash-preview",
+		EmbeddingModel: "gemini-embedding-001",
 		UseBatchWriter: true, // Enable by default
 		BatchSize:      25,
+		AnalysisRPM:    0, // 0 = auto-probe
+		EmbedRPM:       0, // 0 = auto-probe
 	}
 }
 
-// NewEngine creates a compute engine for comms
+// NewEngine creates a compute engine for comms with adaptive control
 func NewEngine(db *sql.DB, geminiClient *gemini.Client, cfg Config) (*Engine, error) {
 	// Initialize the job queue schema
 	if err := queue.Init(db); err != nil {
@@ -90,15 +118,82 @@ func NewEngine(db *sql.DB, geminiClient *gemini.Client, cfg Config) (*Engine, er
 		e.writer.Start()
 	}
 
-	// Register handlers
-	e.engine.RegisterHandler(JobTypeAnalysis, e.handleAnalysisJob)
-	e.engine.RegisterHandler(JobTypeEmbedding, e.handleEmbeddingJob)
+	// Setup RPM rate limiting
+	// If RPM is explicitly set (non-zero), use fixed RPM.
+	// If 0, we'll set up auto-probe controllers in Run().
+	if cfg.AnalysisRPM > 0 {
+		geminiClient.SetAnalysisRPM(cfg.AnalysisRPM)
+	}
+	if cfg.EmbedRPM > 0 {
+		geminiClient.SetEmbedRPM(cfg.EmbedRPM)
+	}
+
+	// Create adaptive semaphore for in-flight control
+	e.sem = NewAdaptiveSemaphore(cfg.WorkerCount)
+
+	// Create adaptive controller
+	e.adaptiveCtrl = NewAdaptiveController(e.sem, DefaultAdaptiveControllerConfig(cfg.WorkerCount))
+
+	// Create auto-RPM controllers if not using fixed RPM
+	if cfg.AnalysisRPM <= 0 {
+		e.analysisRPMCtrl = NewAutoRPMController(DefaultAutoRPMConfig(), geminiClient.SetAnalysisRPM)
+	}
+	if cfg.EmbedRPM <= 0 {
+		e.embedRPMCtrl = NewAutoRPMController(DefaultAutoRPMConfig(), geminiClient.SetEmbedRPM)
+	}
+
+	// Create embedding batcher for high-throughput batch API calls (100 embeddings per request)
+	e.embeddingBatcher = NewEmbeddingsBatcher(geminiClient, cfg.EmbeddingModel)
+
+	// Register wrapped handlers with adaptive control
+	e.engine.RegisterHandler(JobTypeAnalysis, e.wrapHandler(e.handleAnalysisJob, JobTypeAnalysis))
+	e.engine.RegisterHandler(JobTypeEmbedding, e.wrapHandler(e.handleEmbeddingJob, JobTypeEmbedding))
 
 	return e, nil
 }
 
+// wrapHandler wraps a job handler with adaptive control (semaphore + observation)
+func (e *Engine) wrapHandler(base func(context.Context, *queue.Job) error, jobType string) func(context.Context, *queue.Job) error {
+	return func(ctx context.Context, job *queue.Job) error {
+		// Acquire semaphore (respects adaptive concurrency limit)
+		if err := e.sem.Acquire(ctx); err != nil {
+			return err
+		}
+		defer e.sem.Release()
+
+		start := time.Now()
+		err := base(ctx, job)
+		elapsed := time.Since(start)
+
+		// Feed the adaptive controller
+		e.adaptiveCtrl.Observe(elapsed, err)
+
+		// Feed the RPM controllers by job type
+		switch jobType {
+		case JobTypeAnalysis:
+			if e.analysisRPMCtrl != nil {
+				e.analysisRPMCtrl.Observe(err)
+			}
+		case JobTypeEmbedding:
+			if e.embedRPMCtrl != nil {
+				e.embedRPMCtrl.Observe(err)
+			}
+		}
+
+		return err
+	}
+}
+
 // Close shuts down the engine gracefully
 func (e *Engine) Close() error {
+	// Stop controllers
+	if e.cancelControllers != nil {
+		e.cancelControllers()
+	}
+	// Close embedding batcher (flushes pending)
+	if e.embeddingBatcher != nil {
+		e.embeddingBatcher.Close()
+	}
 	if e.writer != nil {
 		return e.writer.Close()
 	}
@@ -112,7 +207,123 @@ func (e *Engine) JobMetrics() *JobMetrics {
 
 // Run starts the compute engine and processes jobs until done or context cancelled
 func (e *Engine) Run(ctx context.Context) (*engine.Stats, error) {
+	// Create a cancellable context for the controllers
+	ctrlCtx, cancel := context.WithCancel(ctx)
+	e.cancelControllers = cancel
+
+	// Start the adaptive controller
+	e.adaptiveCtrl.Start(ctrlCtx)
+
+	// Start RPM auto-controllers
+	if e.analysisRPMCtrl != nil {
+		e.analysisRPMCtrl.Start(ctrlCtx)
+	}
+	if e.embedRPMCtrl != nil {
+		e.embedRPMCtrl.Start(ctrlCtx)
+	}
+
 	return e.engine.Run(ctx)
+}
+
+// ControllerStats returns snapshots of all controller states
+func (e *Engine) ControllerStats() map[string]any {
+	stats := make(map[string]any)
+	stats["adaptive_controller"] = json.RawMessage(e.adaptiveCtrl.SnapshotJSON())
+	if e.analysisRPMCtrl != nil {
+		stats["analysis_rpm_controller"] = json.RawMessage(e.analysisRPMCtrl.SnapshotJSON())
+	}
+	if e.embedRPMCtrl != nil {
+		stats["embed_rpm_controller"] = json.RawMessage(e.embedRPMCtrl.SnapshotJSON())
+	}
+	if e.embeddingBatcher != nil {
+		stats["embedding_batcher"] = e.embeddingBatcher.Metrics()
+	}
+	return stats
+}
+
+// EffectiveRPM returns the current effective RPM for analysis and embedding
+func (e *Engine) EffectiveRPM() (analysisRPM, embedRPM int) {
+	if e.analysisRPMCtrl != nil {
+		analysisRPM = e.analysisRPMCtrl.CurrentRPM()
+	}
+	if e.embedRPMCtrl != nil {
+		embedRPM = e.embedRPMCtrl.CurrentRPM()
+	}
+	return
+}
+
+// PreloadConversations pre-encodes all conversation texts into memory cache.
+// This eliminates per-job DB reads during bulk processing, matching ChatStats'
+// pre-encoding strategy for maximum throughput.
+// Call this before Run() for best results with large batches.
+func (e *Engine) PreloadConversations(ctx context.Context) (int, error) {
+	log.Printf("[preload] Starting conversation pre-encoding...")
+	start := time.Now()
+
+	// Get all conversation IDs
+	rows, err := e.db.QueryContext(ctx, `SELECT id FROM conversations`)
+	if err != nil {
+		return 0, fmt.Errorf("query conversations: %w", err)
+	}
+
+	var convIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		convIDs = append(convIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+
+	if len(convIDs) == 0 {
+		return 0, nil
+	}
+
+	// Pre-encode all conversations
+	cache := make(map[string]string, len(convIDs))
+	for _, convID := range convIDs {
+		text, err := e.buildConversationText(ctx, convID)
+		if err != nil {
+			log.Printf("[preload] Warning: failed to encode conversation %s: %v", convID, err)
+			continue
+		}
+		cache[convID] = text
+	}
+
+	// Swap in the cache atomically
+	e.convTextCacheMu.Lock()
+	e.convTextCache = cache
+	e.convTextCacheMu.Unlock()
+
+	elapsed := time.Since(start)
+	log.Printf("[preload] Pre-encoded %d conversations in %v (%.1f/sec)",
+		len(cache), elapsed, float64(len(cache))/elapsed.Seconds())
+
+	return len(cache), nil
+}
+
+// ClearConversationCache clears the pre-encoded conversation cache
+func (e *Engine) ClearConversationCache() {
+	e.convTextCacheMu.Lock()
+	e.convTextCache = nil
+	e.convTextCacheMu.Unlock()
+}
+
+// getConversationTextCached returns cached conversation text if available
+func (e *Engine) getConversationTextCached(convID string) (string, bool) {
+	e.convTextCacheMu.RLock()
+	defer e.convTextCacheMu.RUnlock()
+	if e.convTextCache == nil {
+		return "", false
+	}
+	text, ok := e.convTextCache[convID]
+	return text, ok
 }
 
 // QueueStats returns current queue statistics
@@ -359,12 +570,12 @@ type EmbeddingJobPayload struct {
 func (e *Engine) handleAnalysisJob(ctx context.Context, job *queue.Job) error {
 	overallStart := time.Now()
 	var (
-		dbReadDur    time.Duration
-		textBuildDur time.Duration
-		apiDur       time.Duration
-		parseDur     time.Duration
-		dbWriteDur   time.Duration
-		outcome      = "error"
+		dbReadDur     time.Duration
+		textBuildDur  time.Duration
+		apiDur        time.Duration
+		parseDur      time.Duration
+		dbWriteDur    time.Duration
+		outcome       = "error"
 		blockedReason string
 	)
 	defer func() {
@@ -398,11 +609,17 @@ func (e *Engine) handleAnalysisJob(ctx context.Context, job *queue.Job) error {
 	}
 	dbReadDur = time.Since(t0)
 
-	// Build conversation text
+	// Build conversation text (check cache first for pre-encoded text)
 	t1 := time.Now()
-	convText, err := e.buildConversationText(ctx, payload.ConversationID)
-	if err != nil {
-		return fmt.Errorf("build conversation text: %w", err)
+	var convText string
+	if cached, ok := e.getConversationTextCached(payload.ConversationID); ok {
+		convText = cached
+	} else {
+		var err error
+		convText, err = e.buildConversationText(ctx, payload.ConversationID)
+		if err != nil {
+			return fmt.Errorf("build conversation text: %w", err)
+		}
 	}
 	textBuildDur = time.Since(t1)
 
@@ -423,6 +640,7 @@ func (e *Engine) handleAnalysisJob(ctx context.Context, job *queue.Job) error {
 		// Existing record found
 		if existingStatus == "completed" || existingStatus == "blocked" {
 			// Already processed successfully
+			outcome = "skipped"
 			return nil
 		}
 		// Update existing record to running
@@ -462,9 +680,11 @@ func (e *Engine) handleAnalysisJob(ctx context.Context, job *queue.Job) error {
 
 	if outputType == "structured" {
 		req.GenerationConfig = &gemini.GenerationConfig{
+			// ThinkingLevel: "minimal" dramatically reduces per-call latency for
+			// structured extraction tasks by minimizing the model's "thinking" phase.
+			// This is critical for high-throughput bulk processing.
+			ThinkingConfig:   &gemini.ThinkingConfig{ThinkingLevel: "minimal"},
 			ResponseMimeType: "application/json",
-			// Note: ThinkingConfig (thinkingLevel) only works with specific models like
-			// gemini-2.0-flash-thinking-exp, not standard gemini-2.0-flash
 		}
 
 		// Add response schema for known analysis types (improves output reliability)
@@ -529,7 +749,7 @@ func (e *Engine) handleAnalysisJob(ctx context.Context, job *queue.Job) error {
 	return err
 }
 
-// handleEmbeddingJob processes an embedding job
+// handleEmbeddingJob processes an embedding job using the batch API
 func (e *Engine) handleEmbeddingJob(ctx context.Context, job *queue.Job) error {
 	overallStart := time.Now()
 	var (
@@ -553,13 +773,17 @@ func (e *Engine) handleEmbeddingJob(ctx context.Context, job *queue.Job) error {
 		return fmt.Errorf("parse payload: %w", err)
 	}
 
-	// Get text to embed
+	// Get text to embed (check cache first for conversations)
 	t0 := time.Now()
 	var text string
 	var err error
 	switch payload.EntityType {
 	case "conversation":
-		text, err = e.buildConversationText(ctx, payload.EntityID)
+		if cached, ok := e.getConversationTextCached(payload.EntityID); ok {
+			text = cached
+		} else {
+			text, err = e.buildConversationText(ctx, payload.EntityID)
+		}
 	case "facet":
 		text, err = e.buildFacetText(ctx, payload.EntityID)
 	case "person":
@@ -580,31 +804,24 @@ func (e *Engine) handleEmbeddingJob(ctx context.Context, job *queue.Job) error {
 		return nil
 	}
 
-	// Call Gemini embeddings
-	req := &gemini.EmbedContentRequest{
-		Model: e.embeddingModel,
-		Content: gemini.Content{
-			Parts: []gemini.Part{{Text: text}},
-		},
-	}
-
+	// Submit to batcher for batched API call (up to 100 embeddings per request)
 	t1 := time.Now()
-	resp, err := e.geminiClient.EmbedContent(ctx, req)
+	embedding, err := e.embeddingBatcher.Submit(ctx, payload.EntityType, payload.EntityID, text)
 	apiDur = time.Since(t1)
 	if err != nil {
-		return fmt.Errorf("gemini embed: %w", err)
+		return fmt.Errorf("gemini batch embed: %w", err)
 	}
 
-	if resp.Embedding == nil || len(resp.Embedding.Values) == 0 {
+	if len(embedding) == 0 {
 		return fmt.Errorf("empty embedding response")
 	}
 
 	// Convert to blob
-	blob := float64SliceToBlob(resp.Embedding.Values)
+	blob := float64SliceToBlob(embedding)
 	embID := uuid.New().String()
 	now := time.Now().Unix()
 	model := e.embeddingModel
-	dimension := len(resp.Embedding.Values)
+	dimension := len(embedding)
 
 	// Persist using batch writer if available
 	t2 := time.Now()
@@ -644,9 +861,29 @@ func (e *Engine) handleEmbeddingJob(ctx context.Context, job *queue.Job) error {
 }
 
 // buildConversationText builds text representation of a conversation
+// Format matches Eve's encoding: "Name: message text [Image] [Attachment: file.pdf]"
+// Attachments are encoded as [Image], [Video], [Audio], [Sticker], or [Attachment: filename]
 func (e *Engine) buildConversationText(ctx context.Context, convID string) (string, error) {
+	// Query events with aggregated attachment info
 	rows, err := e.db.QueryContext(ctx, `
-		SELECT e.content, e.timestamp, p.canonical_name, e.direction
+		SELECT 
+			e.id,
+			e.content, 
+			e.timestamp, 
+			p.canonical_name, 
+			e.direction,
+			(
+				SELECT GROUP_CONCAT(
+					CASE 
+						WHEN a.media_type = 'image' THEN 'image'
+						WHEN a.media_type = 'video' THEN 'video'
+						WHEN a.media_type = 'audio' THEN 'audio'
+						WHEN a.media_type = 'sticker' THEN 'sticker'
+						ELSE COALESCE(a.filename, 'file')
+					END, '|'
+				)
+				FROM attachments a WHERE a.event_id = e.id
+			) as attachments
 		FROM conversation_events ce
 		JOIN events e ON ce.event_id = e.id
 		LEFT JOIN event_participants ep ON e.id = ep.event_id AND ep.role = 'sender'
@@ -661,12 +898,14 @@ func (e *Engine) buildConversationText(ctx context.Context, convID string) (stri
 
 	var sb strings.Builder
 	for rows.Next() {
+		var eventID string
 		var content sql.NullString
 		var timestamp int64
 		var senderName sql.NullString
 		var direction string
+		var attachments sql.NullString
 
-		if err := rows.Scan(&content, &timestamp, &senderName, &direction); err != nil {
+		if err := rows.Scan(&eventID, &content, &timestamp, &senderName, &direction, &attachments); err != nil {
 			return "", err
 		}
 
@@ -675,9 +914,35 @@ func (e *Engine) buildConversationText(ctx context.Context, convID string) (stri
 			name = senderName.String
 		}
 
-		t := time.Unix(timestamp, 0)
+		// Build message parts
+		var parts []string
+
+		// Add text content if present
 		if content.Valid && content.String != "" {
-			sb.WriteString(fmt.Sprintf("[%s] %s: %s\n", t.Format("15:04"), name, content.String))
+			parts = append(parts, content.String)
+		}
+
+		// Add attachments
+		if attachments.Valid && attachments.String != "" {
+			for _, att := range strings.Split(attachments.String, "|") {
+				switch att {
+				case "image":
+					parts = append(parts, "[Image]")
+				case "video":
+					parts = append(parts, "[Video]")
+				case "audio":
+					parts = append(parts, "[Audio]")
+				case "sticker":
+					parts = append(parts, "[Sticker]")
+				default:
+					parts = append(parts, fmt.Sprintf("[Attachment: %s]", att))
+				}
+			}
+		}
+
+		// Only write line if there's content
+		if len(parts) > 0 {
+			sb.WriteString(fmt.Sprintf("%s: %s\n", name, strings.Join(parts, " ")))
 		}
 	}
 
