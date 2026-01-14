@@ -153,3 +153,34 @@ Started: (pending Eve migration completion)
 
 ---
 
+
+---
+
+## 2026-01-13 - [US-035] Implement facet to person_facts sync
+- Verified internal/identify/sync.go already implements comprehensive facet-to-fact sync
+- SyncFacetsToPersonFacts queries completed pii_extraction analysis runs and processes facets
+- FacetToFactMapping maps 27 facet types to fact types with categories
+- syncAnalysisRun processes facets per analysis run, extracting confidence and evidence from metadata_json
+- Handles unattributed facts when person_id is NULL - creates unattributed_facts records
+- ProcessPIIExtractionOutput handles full LLM JSON output structure with persons array
+- Creates third-party person records from new_identity_candidates in extraction output
+- Processes unattributed_facts array from extraction output
+- mapFactKey and mapCategory functions normalize extraction output keys to fact constants
+- Confidence mapping: high=0.9, medium=0.7, low=0.4
+- Source type detection: self_disclosed vs mentioned vs inferred
+- Evidence combines multiple evidence strings from array with semicolon separator
+- Files changed: internal/identify/sync.go (verified), internal/identify/sync_test.go (verified)
+- **Learnings:**
+  - Sync has TWO paths: facet-based (from facets table) and direct JSON (from full LLM output)
+  - SyncFacetsToPersonFacts processes already-stored facets (post-analysis)
+  - ProcessPIIExtractionOutput processes raw JSON output (during analysis)
+  - Both paths handle third-party creation and unattributed facts
+  - Facet metadata_json stores source_type and evidence for fact attribution
+  - ON CONFLICT DO NOTHING pattern in unattributed_facts prevents duplicate ambiguous data
+  - Person lookup for primary contact uses identities table JOIN
+  - Person lookup for non-primary uses fuzzy LIKE match on canonical_name/display_name
+  - Array values in extraction output (nicknames, children) require iteration to create multiple facts
+  - isSensitiveFactType marks SSN, passport, drivers_license as sensitive (is_sensitive=1)
+  - Tests verify mapping consistency between facet types and fact types
+  - SyncSingleRun allows processing individual analysis runs by ID
+  - Stats tracking provides visibility: facets processed, facts created, unattributed created, third parties created

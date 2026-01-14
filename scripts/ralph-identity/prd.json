@@ -97,7 +97,7 @@
         "go build succeeds"
       ],
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "notes": "Bridge between analysis framework output and identity resolution input"
     },
     {

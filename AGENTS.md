@@ -309,6 +309,17 @@ comms chunk run imessage_3hr --json
 - gemini-2.0-flash model configured for cost-effective PII extraction
 - Single quotes in SQL strings require escaping with double quotes ('')
 - Analysis framework enables LLM-based extraction without custom parsing code
+- Facet-to-fact sync: SyncFacetsToPersonFacts processes completed pii_extraction runs
+- FacetToFactMapping maps 27 facet types to (category, fact_type) pairs
+- Two sync paths: facet-based (from facets table) and direct JSON (ProcessPIIExtractionOutput)
+- Confidence mapping: high=0.9, medium=0.7, low=0.4 from LLM output to numeric scores
+- Source type detection: self_disclosed, mentioned, inferred, extracted
+- Unattributed facts created when facet person_id is NULL (ambiguous attribution)
+- Third-party persons auto-created from new_identity_candidates in extraction output
+- Person lookup: primary contact via identities JOIN, non-primary via fuzzy name LIKE match
+- Evidence strings combined with semicolons when multiple evidence pieces exist
+- isSensitiveFactType flags SSN, passport, drivers_license as is_sensitive=1
+- SyncStats tracks: facets processed, facts created/updated, unattributed created, third parties created
 
 ## Schema Quick Reference
 
