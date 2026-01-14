@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -13,10 +15,13 @@ import (
 	stdsync "sync"
 	"time"
 
+	"github.com/Napageneral/comms/internal/adapters"
 	"github.com/Napageneral/comms/internal/bus"
 	"github.com/Napageneral/comms/internal/chunk"
+	"github.com/Napageneral/comms/internal/compute"
 	"github.com/Napageneral/comms/internal/config"
 	"github.com/Napageneral/comms/internal/db"
+	"github.com/Napageneral/comms/internal/gemini"
 	"github.com/Napageneral/comms/internal/identify"
 	"github.com/Napageneral/comms/internal/importer"
 	"github.com/Napageneral/comms/internal/me"
@@ -24,6 +29,7 @@ import (
 	"github.com/Napageneral/comms/internal/sync"
 	"github.com/Napageneral/comms/internal/tag"
 	"github.com/Napageneral/comms/internal/timeline"
+	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/cobra"
 )
 
@@ -1586,7 +1592,119 @@ queryable event store with identity resolution.`,
 	watchGmailCmd.Flags().String("adapter", "", "Only trigger sync for this adapter (default: all gogcli adapters)")
 	watchGmailCmd.Flags().Int("debounce-seconds", 10, "Minimum seconds between sync triggers per adapter")
 
+	// watch imessage: watch chat.db for changes and trigger incremental sync
+	watchIMessageCmd := &cobra.Command{
+		Use:   "imessage",
+		Short: "Watch chat.db for new messages and sync incrementally",
+		Run: func(cmd *cobra.Command, args []string) {
+			debounceSec, _ := cmd.Flags().GetInt("debounce-seconds")
+
+			database, err := db.Open()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to open database: %v\n", err)
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			adapter, err := adapters.NewIMessageAdapter()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to create iMessage adapter: %v\n", err)
+				os.Exit(1)
+			}
+
+			// Get chat.db path
+			chatDBPath := os.ExpandEnv("$HOME/Library/Messages/chat.db")
+			if override := os.Getenv("EVE_SOURCE_CHAT_DB"); override != "" {
+				chatDBPath = os.ExpandEnv(override)
+			}
+			chatDBDir := filepath.Dir(chatDBPath)
+
+			// Create file watcher
+			watcher, err := fsnotify.NewWatcher()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to create watcher: %v\n", err)
+				os.Exit(1)
+			}
+			defer watcher.Close()
+
+			// Watch the Messages directory (catches chat.db and WAL changes)
+			if err := watcher.Add(chatDBDir); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to watch %s: %v\n", chatDBDir, err)
+				os.Exit(1)
+			}
+
+			fmt.Printf("Watching for iMessage changes in %s (debounce: %ds)\n", chatDBDir, debounceSec)
+			fmt.Println("Press Ctrl+C to stop")
+
+			// Debounce timer
+			var debounceTimer *time.Timer
+			debounceDelay := time.Duration(debounceSec) * time.Second
+
+			// Sync function with debouncing
+			triggerSync := func() {
+				if debounceTimer != nil {
+					debounceTimer.Stop()
+				}
+				debounceTimer = time.AfterFunc(debounceDelay, func() {
+					ctx := context.Background()
+					result, err := adapter.Sync(ctx, database, false)
+					if err != nil {
+						fmt.Printf("[%s] Sync error: %v\n", time.Now().Format("15:04:05"), err)
+						return
+					}
+					totalNew := result.EventsCreated + result.ReactionsCreated
+					if totalNew > 0 {
+						fmt.Printf("[%s] Synced %d new events (%d messages, %d reactions, %d attachments)\n",
+							time.Now().Format("15:04:05"),
+							totalNew,
+							result.EventsCreated,
+							result.ReactionsCreated,
+							result.AttachmentsCreated,
+						)
+					}
+				})
+			}
+
+			// Initial sync to catch up
+			fmt.Printf("[%s] Running initial sync...\n", time.Now().Format("15:04:05"))
+			ctx := context.Background()
+			result, err := adapter.Sync(ctx, database, false)
+			if err != nil {
+				fmt.Printf("[%s] Initial sync error: %v\n", time.Now().Format("15:04:05"), err)
+			} else if result.EventsCreated > 0 || result.ReactionsCreated > 0 {
+				fmt.Printf("[%s] Initial sync: %d events, %d reactions\n",
+					time.Now().Format("15:04:05"),
+					result.EventsCreated,
+					result.ReactionsCreated,
+				)
+			} else {
+				fmt.Printf("[%s] Already up to date\n", time.Now().Format("15:04:05"))
+			}
+
+			// Watch for file changes
+			for {
+				select {
+				case event, ok := <-watcher.Events:
+					if !ok {
+						return
+					}
+					// Only trigger on chat.db or WAL file changes
+					if strings.Contains(event.Name, "chat.db") {
+						triggerSync()
+					}
+				case err, ok := <-watcher.Errors:
+					if !ok {
+						return
+					}
+					fmt.Printf("[%s] Watch error: %v\n", time.Now().Format("15:04:05"), err)
+				}
+			}
+		},
+	}
+	watchIMessageCmd.Flags().Int("debounce-seconds", 2, "Minimum seconds between sync triggers")
+
 	watchCmd.AddCommand(watchGmailCmd)
+	watchCmd.AddCommand(watchIMessageCmd)
 	rootCmd.AddCommand(watchCmd)
 
 	// bus command
@@ -3852,7 +3970,531 @@ Examples:
 	chunkCmd.AddCommand(chunkRunCmd)
 	rootCmd.AddCommand(chunkCmd)
 
-	// TODO: Add more commands as per PRD
+	// ==================== COMPUTE COMMAND ====================
+	computeCmd := &cobra.Command{
+		Use:   "compute",
+		Short: "AI compute engine for analysis and embeddings",
+	}
+
+	var computeWorkers int
+	var computeAnalysisModel string
+	var computeEmbeddingModel string
+
+	// compute run - run the compute engine
+	computeRunCmd := &cobra.Command{
+		Use:   "run",
+		Short: "Run the compute engine to process queued jobs",
+		Run: func(cmd *cobra.Command, args []string) {
+			database, err := db.Open()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			apiKey := os.Getenv("GEMINI_API_KEY")
+			geminiClient := gemini.NewClient(apiKey)
+
+			cfg := compute.DefaultConfig()
+			if computeWorkers > 0 {
+				cfg.WorkerCount = computeWorkers
+			}
+			if computeAnalysisModel != "" {
+				cfg.AnalysisModel = computeAnalysisModel
+			}
+			if computeEmbeddingModel != "" {
+				cfg.EmbeddingModel = computeEmbeddingModel
+			}
+
+			engine, err := compute.NewEngine(database, geminiClient, cfg)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating engine: %v\n", err)
+				os.Exit(1)
+			}
+			defer engine.Close() // Ensure TxBatchWriter is flushed
+
+			fmt.Printf("Starting compute engine with %d workers...\n", cfg.WorkerCount)
+			if cfg.UseBatchWriter {
+				fmt.Printf("TxBatchWriter enabled (batch size: %d)\n", cfg.BatchSize)
+			}
+			fmt.Printf("Analysis model: %s, Embedding model: %s\n", cfg.AnalysisModel, cfg.EmbeddingModel)
+
+			ctx := context.Background()
+			stats, err := engine.Run(ctx)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			// Get job metrics
+			jobMetrics := engine.JobMetrics().Snapshot()
+
+			if jsonOutput {
+				printJSON(map[string]any{
+					"ok":          true,
+					"succeeded":   stats.Succeeded,
+					"failed":      stats.Failed,
+					"skipped":     stats.Skipped,
+					"job_metrics": jobMetrics,
+				})
+			} else {
+				fmt.Printf("\nCompute complete: %d succeeded, %d failed, %d skipped\n",
+					stats.Succeeded, stats.Failed, stats.Skipped)
+
+				// Print job metrics summary
+				if jobMetrics != nil {
+					if analysis, ok := jobMetrics["analysis"].(map[string]any); ok {
+						if total, _ := analysis["total"].(int); total > 0 {
+							fmt.Printf("\nAnalysis metrics (%d jobs):\n", total)
+							if avgMs, ok := analysis["avg_ms"].(map[string]any); ok {
+								fmt.Printf("  Avg API call: %.0fms, DB write: %.0fms, Overall: %.0fms\n",
+									avgMs["api_call"], avgMs["db_write"], avgMs["overall"])
+							}
+						}
+					}
+					if embedding, ok := jobMetrics["embedding"].(map[string]any); ok {
+						if total, _ := embedding["total"].(int); total > 0 {
+							fmt.Printf("\nEmbedding metrics (%d jobs):\n", total)
+							if avgMs, ok := embedding["avg_ms"].(map[string]any); ok {
+								fmt.Printf("  Avg API call: %.0fms, DB write: %.0fms, Overall: %.0fms\n",
+									avgMs["api_call"], avgMs["db_write"], avgMs["overall"])
+							}
+						}
+					}
+				}
+			}
+		},
+	}
+	computeRunCmd.Flags().IntVarP(&computeWorkers, "workers", "w", 4, "Number of concurrent workers")
+	computeRunCmd.Flags().StringVar(&computeAnalysisModel, "analysis-model", "", "Gemini model for analysis")
+	computeRunCmd.Flags().StringVar(&computeEmbeddingModel, "embedding-model", "", "Gemini model for embeddings")
+
+	// compute enqueue - queue jobs
+	computeEnqueueCmd := &cobra.Command{
+		Use:   "enqueue [type]",
+		Short: "Enqueue jobs (analysis or embeddings)",
+		Long:  "Enqueue jobs for processing. Type can be 'analysis' or 'embeddings'",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			database, err := db.Open()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			geminiClient := gemini.NewClient("")
+			engine, err := compute.NewEngine(database, geminiClient, compute.DefaultConfig())
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			ctx := context.Background()
+			jobType := args[0]
+			var count int
+
+			switch jobType {
+			case "analysis":
+				analysisType, _ := cmd.Flags().GetString("analysis-type")
+				if analysisType == "" {
+					analysisType = "convo-all-v1"
+				}
+				count, err = engine.EnqueueAnalysis(ctx, analysisType)
+			case "embeddings":
+				count, err = engine.EnqueueEmbeddings(ctx)
+			case "facet-embeddings":
+				count, err = engine.EnqueueFacetEmbeddings(ctx)
+			case "person-embeddings":
+				count, err = engine.EnqueuePersonEmbeddings(ctx)
+			case "all-embeddings":
+				// Enqueue all embedding types
+				c1, e1 := engine.EnqueueEmbeddings(ctx)
+				c2, e2 := engine.EnqueueFacetEmbeddings(ctx)
+				c3, e3 := engine.EnqueuePersonEmbeddings(ctx)
+				count = c1 + c2 + c3
+				if e1 != nil {
+					err = e1
+				} else if e2 != nil {
+					err = e2
+				} else {
+					err = e3
+				}
+				if jsonOutput {
+					printJSON(map[string]any{
+						"ok":           err == nil,
+						"conversations": c1,
+						"facets":       c2,
+						"persons":      c3,
+						"total":        count,
+					})
+					return
+				}
+			default:
+				fmt.Fprintf(os.Stderr, "Unknown job type: %s\n", jobType)
+				fmt.Fprintf(os.Stderr, "Available types: analysis, embeddings, facet-embeddings, person-embeddings, all-embeddings\n")
+				os.Exit(1)
+			}
+
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			if jsonOutput {
+				printJSON(map[string]any{"ok": true, "queued": count})
+			} else {
+				fmt.Printf("Queued %d %s jobs\n", count, jobType)
+			}
+		},
+	}
+	computeEnqueueCmd.Flags().String("analysis-type", "convo-all-v1", "Analysis type name")
+
+	// compute stats - show queue stats
+	computeStatsCmd := &cobra.Command{
+		Use:   "stats",
+		Short: "Show compute queue statistics",
+		Run: func(cmd *cobra.Command, args []string) {
+			database, err := db.Open()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			geminiClient := gemini.NewClient("")
+			engine, err := compute.NewEngine(database, geminiClient, compute.DefaultConfig())
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			stats, err := engine.QueueStats()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			if jsonOutput {
+				printJSON(stats)
+			} else {
+				fmt.Printf("Queue Statistics:\n")
+				fmt.Printf("  Pending:   %d\n", stats.Pending)
+				fmt.Printf("  Leased:    %d\n", stats.Leased)
+				fmt.Printf("  Succeeded: %d\n", stats.Succeeded)
+				fmt.Printf("  Failed:    %d\n", stats.Failed)
+				fmt.Printf("  Dead:      %d\n", stats.Dead)
+				fmt.Printf("  Total:     %d\n", stats.Total)
+			}
+		},
+	}
+
+	// compute seed - seed default analysis types
+	computeSeedCmd := &cobra.Command{
+		Use:   "seed",
+		Short: "Seed default analysis types",
+		Run: func(cmd *cobra.Command, args []string) {
+			database, err := db.Open()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			ctx := context.Background()
+			now := time.Now().Unix()
+
+			// Seed convo-all-v1 analysis type
+			promptTemplate := `# Conversation Analysis
+
+Analyze the following conversation and extract:
+1. A short summary (10-50 words)
+2. Key entities mentioned (people, places, organizations)
+3. Main topics discussed
+4. Emotions expressed by each participant
+5. Any humor or jokes
+
+Return as JSON with keys: summary, entities, topics, emotions, humor
+
+Conversation:
+{{{conversation_text}}}`
+
+			facetsConfig := `{
+				"mappings": [
+					{"json_path": "entities[]", "facet_type": "entity"},
+					{"json_path": "topics[]", "facet_type": "topic"},
+					{"json_path": "emotions[]", "facet_type": "emotion"},
+					{"json_path": "humor[]", "facet_type": "humor"}
+				]
+			}`
+
+			_, err = database.ExecContext(ctx, `
+				INSERT INTO analysis_types (id, name, version, description, output_type, facets_config_json, prompt_template, model, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(name) DO NOTHING
+			`, "convo-all-v1", "convo-all-v1", "1.0.0",
+				"Extract entities, topics, emotions, and humor from conversations",
+				"structured", facetsConfig, promptTemplate,
+				"gemini-2.0-flash", now, now)
+
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			if jsonOutput {
+				printJSON(map[string]any{"ok": true, "message": "Seeded analysis types"})
+			} else {
+				fmt.Println("Seeded analysis types:")
+				fmt.Println("  - convo-all-v1 (structured extraction)")
+			}
+		},
+	}
+
+	computeCmd.AddCommand(computeRunCmd)
+	computeCmd.AddCommand(computeEnqueueCmd)
+	computeCmd.AddCommand(computeStatsCmd)
+	computeCmd.AddCommand(computeSeedCmd)
+	rootCmd.AddCommand(computeCmd)
+
+	// search command - semantic search using embeddings
+	var searchChannel string
+	var searchLimit int
+	var searchModel string
+
+	searchCmd := &cobra.Command{
+		Use:   "search [query]",
+		Short: "Semantic search across conversations using embeddings",
+		Long: `Search conversations using semantic similarity.
+
+Uses AI embeddings to find conversations that match the meaning
+of your query, not just keyword matches.
+
+Examples:
+  comms search "when did we talk about moving"
+  comms search "restaurant recommendations" --channel imessage
+  comms search "project deadlines" --limit 5`,
+		Args: cobra.MinimumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			type SearchResult struct {
+				ConversationID string  `json:"conversation_id"`
+				Channel        string  `json:"channel,omitempty"`
+				ThreadID       string  `json:"thread_id,omitempty"`
+				ThreadName     string  `json:"thread_name,omitempty"`
+				StartTime      int64   `json:"start_time"`
+				EndTime        int64   `json:"end_time"`
+				EventCount     int     `json:"event_count"`
+				Similarity     float64 `json:"similarity"`
+				Preview        string  `json:"preview,omitempty"`
+			}
+
+			type Result struct {
+				OK      bool           `json:"ok"`
+				Query   string         `json:"query"`
+				Results []SearchResult `json:"results"`
+				Message string         `json:"message,omitempty"`
+			}
+
+			queryText := strings.Join(args, " ")
+			if queryText == "" {
+				result := Result{OK: false, Message: "Search query is required"}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			// Get API key
+			apiKey := os.Getenv("GEMINI_API_KEY")
+			if apiKey == "" {
+				result := Result{OK: false, Query: queryText, Message: "GEMINI_API_KEY environment variable required for semantic search"}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			database, err := db.Open()
+			if err != nil {
+				result := Result{OK: false, Query: queryText, Message: fmt.Sprintf("Failed to open database: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			ctx := context.Background()
+
+			// Generate embedding for query
+			geminiClient := gemini.NewClient(apiKey)
+			model := searchModel
+			if model == "" {
+				model = "text-embedding-004"
+			}
+
+			queryEmbedding, err := geminiClient.EmbedContent(ctx, &gemini.EmbedContentRequest{
+				Model: model,
+				Content: gemini.Content{
+					Parts: []gemini.Part{{Text: queryText}},
+				},
+			})
+			if err != nil {
+				result := Result{OK: false, Query: queryText, Message: fmt.Sprintf("Failed to generate query embedding: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			if queryEmbedding.Embedding == nil || len(queryEmbedding.Embedding.Values) == 0 {
+				result := Result{OK: false, Query: queryText, Message: "Empty embedding response from Gemini"}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			// Query all conversation embeddings
+			embQuery := `
+				SELECT e.entity_id, e.embedding_blob, e.dimension,
+				       c.channel, c.thread_id, c.start_time, c.end_time, c.event_count,
+				       t.name as thread_name
+				FROM embeddings e
+				JOIN conversations c ON e.entity_id = c.id
+				LEFT JOIN threads t ON c.thread_id = t.id
+				WHERE e.entity_type = 'conversation' AND e.model = ?
+			`
+			embArgs := []interface{}{model}
+
+			if searchChannel != "" {
+				embQuery += ` AND c.channel = ?`
+				embArgs = append(embArgs, searchChannel)
+			}
+
+			rows, err := database.QueryContext(ctx, embQuery, embArgs...)
+			if err != nil {
+				result := Result{OK: false, Query: queryText, Message: fmt.Sprintf("Failed to query embeddings: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			defer rows.Close()
+
+			var results []SearchResult
+
+			for rows.Next() {
+				var convID string
+				var embBlob []byte
+				var dimension int
+				var channel, threadID, threadName sql.NullString
+				var startTime, endTime int64
+				var eventCount int
+
+				if err := rows.Scan(&convID, &embBlob, &dimension, &channel, &threadID, &startTime, &endTime, &eventCount, &threadName); err != nil {
+					continue
+				}
+
+				// Convert blob to float64 slice
+				convEmbedding := blobToFloat64Slice(embBlob)
+				if len(convEmbedding) != len(queryEmbedding.Embedding.Values) {
+					continue // Dimension mismatch
+				}
+
+				// Calculate cosine similarity
+				similarity := cosineSimilarity(queryEmbedding.Embedding.Values, convEmbedding)
+
+				results = append(results, SearchResult{
+					ConversationID: convID,
+					Channel:        channel.String,
+					ThreadID:       threadID.String,
+					ThreadName:     threadName.String,
+					StartTime:      startTime,
+					EndTime:        endTime,
+					EventCount:     eventCount,
+					Similarity:     similarity,
+				})
+			}
+
+			// Sort by similarity (descending)
+			for i := 0; i < len(results); i++ {
+				for j := i + 1; j < len(results); j++ {
+					if results[j].Similarity > results[i].Similarity {
+						results[i], results[j] = results[j], results[i]
+					}
+				}
+			}
+
+			// Limit results
+			limit := searchLimit
+			if limit <= 0 {
+				limit = 10
+			}
+			if len(results) > limit {
+				results = results[:limit]
+			}
+
+			// Get preview for top results
+			for i := range results {
+				preview, _ := getConversationPreview(ctx, database, results[i].ConversationID, 200)
+				results[i].Preview = preview
+			}
+
+			result := Result{
+				OK:      true,
+				Query:   queryText,
+				Results: results,
+			}
+
+			if jsonOutput {
+				printJSON(result)
+			} else {
+				fmt.Printf("Search results for: %q\n\n", queryText)
+				if len(results) == 0 {
+					fmt.Println("No matching conversations found.")
+					fmt.Println("\nTip: Make sure you have embeddings generated (run: comms compute enqueue embeddings && comms compute run)")
+				} else {
+					for i, r := range results {
+						timeStr := time.Unix(r.StartTime, 0).Format("2006-01-02 15:04")
+						fmt.Printf("%d. [%.2f] %s", i+1, r.Similarity, timeStr)
+						if r.ThreadName != "" {
+							fmt.Printf(" - %s", r.ThreadName)
+						} else if r.Channel != "" {
+							fmt.Printf(" - %s", r.Channel)
+						}
+						fmt.Printf(" (%d messages)\n", r.EventCount)
+						if r.Preview != "" {
+							// Truncate and indent preview
+							preview := r.Preview
+							if len(preview) > 150 {
+								preview = preview[:147] + "..."
+							}
+							fmt.Printf("   %s\n", preview)
+						}
+						fmt.Println()
+					}
+				}
+			}
+		},
+	}
+
+	searchCmd.Flags().StringVar(&searchChannel, "channel", "", "Filter by channel (imessage, gmail, aix, etc.)")
+	searchCmd.Flags().IntVar(&searchLimit, "limit", 10, "Maximum number of results")
+	searchCmd.Flags().StringVar(&searchModel, "model", "text-embedding-004", "Embedding model to use")
+	rootCmd.AddCommand(searchCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -3918,4 +4560,79 @@ func checkAdapterStatus(name string, adapter config.AdapterConfig) string {
 	default:
 		return "unknown adapter type"
 	}
+}
+
+// blobToFloat64Slice converts embedding blob to float64 slice (little-endian)
+func blobToFloat64Slice(blob []byte) []float64 {
+	if len(blob)%8 != 0 {
+		return nil
+	}
+	values := make([]float64, len(blob)/8)
+	for i := 0; i < len(values); i++ {
+		bits := uint64(0)
+		for j := 0; j < 8; j++ {
+			bits |= uint64(blob[i*8+j]) << (j * 8)
+		}
+		values[i] = math.Float64frombits(bits)
+	}
+	return values
+}
+
+// cosineSimilarity calculates cosine similarity between two vectors
+func cosineSimilarity(a, b []float64) float64 {
+	if len(a) != len(b) || len(a) == 0 {
+		return 0
+	}
+
+	var dotProduct, normA, normB float64
+	for i := range a {
+		dotProduct += a[i] * b[i]
+		normA += a[i] * a[i]
+		normB += b[i] * b[i]
+	}
+
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+
+	return dotProduct / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+
+// getConversationPreview returns a text preview of a conversation
+func getConversationPreview(ctx context.Context, database *sql.DB, convID string, maxLen int) (string, error) {
+	rows, err := database.QueryContext(ctx, `
+		SELECT e.content, p.canonical_name
+		FROM conversation_events ce
+		JOIN events e ON ce.event_id = e.id
+		LEFT JOIN event_participants ep ON e.id = ep.event_id AND ep.role = 'sender'
+		LEFT JOIN persons p ON ep.person_id = p.id
+		WHERE ce.conversation_id = ?
+		ORDER BY ce.position
+		LIMIT 5
+	`, convID)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	var parts []string
+	for rows.Next() {
+		var content, name sql.NullString
+		if err := rows.Scan(&content, &name); err != nil {
+			continue
+		}
+		if content.Valid && content.String != "" {
+			msg := content.String
+			if name.Valid && name.String != "" {
+				msg = name.String + ": " + msg
+			}
+			parts = append(parts, msg)
+		}
+	}
+
+	preview := strings.Join(parts, " | ")
+	if len(preview) > maxLen {
+		preview = preview[:maxLen-3] + "..."
+	}
+	return preview, nil
 }

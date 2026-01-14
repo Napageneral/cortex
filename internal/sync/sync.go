@@ -116,8 +116,9 @@ func syncAdapter(ctx context.Context, db *sql.DB, name string, cfg config.Adapte
 	var err error
 
 	switch cfg.Type {
-	case "eve":
-		adapter, err = adapters.NewEveAdapter()
+	case "eve", "imessage":
+		// Use new direct iMessage adapter (reads chat.db directly via Eve library)
+		adapter, err = adapters.NewIMessageAdapter()
 		if err != nil {
 			result.Error = fmt.Sprintf("Failed to create adapter: %v", err)
 			return result

@@ -1,5 +1,12 @@
 package adapters
 
+// DEPRECATED: This adapter reads from eve.db which is no longer used.
+// Use IMessageAdapter (imessage.go) instead, which reads directly from chat.db
+// via the eve/imessage library package.
+//
+// This file is kept for reference during the migration period and will be
+// removed in a future version.
+
 import (
 	"context"
 	"database/sql"
@@ -16,11 +23,15 @@ import (
 )
 
 // EveAdapter syncs iMessage events from Eve's database
+//
+// Deprecated: Use IMessageAdapter instead, which reads directly from chat.db
 type EveAdapter struct {
 	eveDBPath string
 }
 
 // NewEveAdapter creates a new Eve adapter
+//
+// Deprecated: Use NewIMessageAdapter instead
 func NewEveAdapter() (*EveAdapter, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -297,7 +308,8 @@ func (e *EveAdapter) syncContacts(ctx context.Context, eveDB, commsDB *sql.DB) (
 		var personID string
 		if identifier.Valid && identifierType.Valid {
 			// Try to find person by identifier
-			row := commsDB.QueryRow(`
+			// Note: Use tx.QueryRow to avoid deadlock - SQLite doesn't allow concurrent access
+			row := tx.QueryRow(`
 				SELECT person_id FROM identities
 				WHERE channel = ? AND identifier = ?
 			`, identifierType.String, identifier.String)
@@ -670,6 +682,7 @@ func (e *EveAdapter) syncMessages(ctx context.Context, eveDB, commsDB *sql.DB, l
 	const contentTypesTextAttachment = "[\"text\",\"attachment\"]"
 
 	// Query messages from Eve
+	// Note: thread_id is prefixed with adapter name to match threads.id format
 	query := `
 		SELECT
 			m.id,
@@ -681,7 +694,7 @@ func (e *EveAdapter) syncMessages(ctx context.Context, eveDB, commsDB *sql.DB, l
 			m.is_from_me,
 			m.service_name,
 			m.reply_to_guid,
-			COALESCE(c.chat_identifier, printf('chat_id:%d', m.chat_id)) as thread_id,
+			'imessage:' || COALESCE(c.chat_identifier, printf('chat_id:%d', m.chat_id)) as thread_id,
 			(SELECT COUNT(*) FROM attachments a WHERE a.message_id = m.id) as attachment_count
 		FROM messages m
 		LEFT JOIN chats c ON m.chat_id = c.id
@@ -992,7 +1005,7 @@ func (e *EveAdapter) syncReactions(ctx context.Context, eveDB, commsDB *sql.DB, 
 			r.reaction_type,
 			r.is_from_me,
 			CAST(strftime('%s', r.timestamp) AS INTEGER) as timestamp_unix,
-			COALESCE(c.chat_identifier, printf('chat_id:%d', r.chat_id)) as thread_id
+			'imessage:' || COALESCE(c.chat_identifier, printf('chat_id:%d', r.chat_id)) as thread_id
 		FROM reactions r
 		LEFT JOIN chats c ON r.chat_id = c.id
 		WHERE CAST(strftime('%s', r.timestamp) AS INTEGER) > ?

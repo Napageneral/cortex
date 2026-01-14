@@ -1,0 +1,305 @@
+package gemini
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"math"
+	"math/rand"
+	"net/http"
+	"os/exec"
+	"strings"
+	"sync"
+	"time"
+)
+
+const (
+	baseURL        = "https://generativelanguage.googleapis.com/v1beta"
+	maxRetries     = 5
+	initialBackoff = 500 * time.Millisecond
+	maxBackoff     = 30 * time.Second
+	defaultTimeout = 120 * time.Second
+)
+
+// Client is a Gemini API client
+type Client struct {
+	httpClient  *http.Client
+	apiKey      string
+	useADC      bool
+	accessToken string
+	tokenExpiry time.Time
+	tokenMu     sync.Mutex
+}
+
+// NewClient creates a new Gemini client
+// If apiKey is empty, uses Application Default Credentials (gcloud auth)
+func NewClient(apiKey string) *Client {
+	return &Client{
+		httpClient: &http.Client{
+			Timeout: defaultTimeout,
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 100,
+				IdleConnTimeout:     90 * time.Second,
+				ForceAttemptHTTP2:   true,
+			},
+		},
+		apiKey: apiKey,
+		useADC: apiKey == "",
+	}
+}
+
+func (c *Client) getAccessToken() (string, error) {
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+
+	if c.accessToken != "" && time.Now().Add(60*time.Second).Before(c.tokenExpiry) {
+		return c.accessToken, nil
+	}
+
+	cmd := exec.Command("gcloud", "auth", "application-default", "print-access-token")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("gcloud auth failed: %w (run 'gcloud auth application-default login')", err)
+	}
+
+	c.accessToken = strings.TrimSpace(string(output))
+	c.tokenExpiry = time.Now().Add(55 * time.Minute)
+	return c.accessToken, nil
+}
+
+func (c *Client) buildRequest(ctx context.Context, method, endpoint string, body []byte) (*http.Request, error) {
+	var url string
+	if c.useADC {
+		url = fmt.Sprintf("%s/%s", baseURL, endpoint)
+	} else {
+		url = fmt.Sprintf("%s/%s?key=%s", baseURL, endpoint, c.apiKey)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	if c.useADC {
+		token, err := c.getAccessToken()
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	return req, nil
+}
+
+// GenerateContentRequest for the generateContent API
+type GenerateContentRequest struct {
+	Contents         []Content         `json:"contents"`
+	GenerationConfig *GenerationConfig `json:"generationConfig,omitempty"`
+	SafetySettings   []SafetySetting   `json:"safetySettings,omitempty"`
+}
+
+type GenerationConfig struct {
+	ThinkingConfig   *ThinkingConfig `json:"thinkingConfig,omitempty"`
+	ResponseMimeType string          `json:"responseMimeType,omitempty"`
+	ResponseSchema   any             `json:"responseSchema,omitempty"`
+}
+
+type ThinkingConfig struct {
+	ThinkingLevel string `json:"thinkingLevel,omitempty"`
+}
+
+type SafetySetting struct {
+	Category  string `json:"category"`
+	Threshold string `json:"threshold"`
+}
+
+type Content struct {
+	Role  string `json:"role,omitempty"`
+	Parts []Part `json:"parts"`
+}
+
+type Part struct {
+	Text string `json:"text,omitempty"`
+}
+
+type GenerateContentResponse struct {
+	Candidates     []Candidate     `json:"candidates,omitempty"`
+	PromptFeedback *PromptFeedback `json:"promptFeedback,omitempty"`
+	Error          *APIError       `json:"error,omitempty"`
+}
+
+type Candidate struct {
+	Content       Content        `json:"content"`
+	FinishReason  string         `json:"finishReason,omitempty"`
+	SafetyRatings []SafetyRating `json:"safetyRatings,omitempty"`
+}
+
+type PromptFeedback struct {
+	BlockReason        string         `json:"blockReason,omitempty"`
+	BlockReasonMessage string         `json:"blockReasonMessage,omitempty"`
+	SafetyRatings      []SafetyRating `json:"safetyRatings,omitempty"`
+}
+
+type SafetyRating struct {
+	Category    string `json:"category"`
+	Probability string `json:"probability"`
+}
+
+type APIError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Status  string `json:"status"`
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("gemini API error %d (%s): %s", e.Code, e.Status, e.Message)
+}
+
+// EmbedContentRequest for embedding API
+type EmbedContentRequest struct {
+	Model   string  `json:"model"`
+	Content Content `json:"content"`
+}
+
+type EmbedContentResponse struct {
+	Embedding *Embedding `json:"embedding,omitempty"`
+	Error     *APIError  `json:"error,omitempty"`
+}
+
+type Embedding struct {
+	Values []float64 `json:"values"`
+}
+
+// GenerateContent calls the Gemini generateContent API
+func (c *Client) GenerateContent(ctx context.Context, model string, req *GenerateContentRequest) (*GenerateContentResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	endpoint := fmt.Sprintf("models/%s:generateContent", model)
+
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := calculateBackoff(attempt)
+			time.Sleep(backoff)
+		}
+
+		httpReq, err := c.buildRequest(ctx, "POST", endpoint, body)
+		if err != nil {
+			return nil, err
+		}
+
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if isRetryableStatus(resp.StatusCode) {
+			lastErr = fmt.Errorf("status %d", resp.StatusCode)
+			continue
+		}
+
+		var result GenerateContentResponse
+		if err := json.Unmarshal(respBody, &result); err != nil {
+			return nil, fmt.Errorf("unmarshal response: %w", err)
+		}
+
+		if result.Error != nil {
+			if isRetryableStatus(result.Error.Code) {
+				lastErr = result.Error
+				continue
+			}
+			return nil, result.Error
+		}
+
+		return &result, nil
+	}
+
+	return nil, fmt.Errorf("max retries exceeded: %w", lastErr)
+}
+
+// EmbedContent calls the Gemini embedContent API
+func (c *Client) EmbedContent(ctx context.Context, req *EmbedContentRequest) (*EmbedContentResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	endpoint := fmt.Sprintf("models/%s:embedContent", req.Model)
+
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := calculateBackoff(attempt)
+			time.Sleep(backoff)
+		}
+
+		httpReq, err := c.buildRequest(ctx, "POST", endpoint, body)
+		if err != nil {
+			return nil, err
+		}
+
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if isRetryableStatus(resp.StatusCode) {
+			lastErr = fmt.Errorf("status %d", resp.StatusCode)
+			continue
+		}
+
+		var result EmbedContentResponse
+		if err := json.Unmarshal(respBody, &result); err != nil {
+			return nil, fmt.Errorf("unmarshal response: %w", err)
+		}
+
+		if result.Error != nil {
+			if isRetryableStatus(result.Error.Code) {
+				lastErr = result.Error
+				continue
+			}
+			return nil, result.Error
+		}
+
+		return &result, nil
+	}
+
+	return nil, fmt.Errorf("max retries exceeded: %w", lastErr)
+}
+
+func isRetryableStatus(code int) bool {
+	return code == 429 || code >= 500
+}
+
+func calculateBackoff(attempt int) time.Duration {
+	backoff := float64(initialBackoff) * math.Pow(2, float64(attempt-1))
+	if backoff > float64(maxBackoff) {
+		backoff = float64(maxBackoff)
+	}
+	jitter := backoff * 0.25 * (rand.Float64()*2 - 1)
+	return time.Duration(backoff + jitter)
+}
