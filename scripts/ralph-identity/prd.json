@@ -144,7 +144,7 @@
         "go build succeeds"
       ],
       "priority": 9,
-      "passes": false,
+      "passes": true,
       "notes": "Core of identifier-centric resolution algorithm"
     },
     {
@@ -158,7 +158,7 @@
         "go build succeeds"
       ],
       "priority": 10,
-      "passes": false,
+      "passes": true,
       "notes": "Compound identifiers like full_name + birthdate = very hard match"
     },
     {
@@ -172,7 +172,7 @@
         "go build succeeds"
       ],
       "priority": 11,
-      "passes": false,
+      "passes": true,
       "notes": "Accumulate soft identifier matches into similarity score"
     },
     {
@@ -187,7 +187,7 @@
         "go build succeeds"
       ],
       "priority": 12,
-      "passes": false,
+      "passes": true,
       "notes": "Converts detection results into actionable merge suggestions"
     },
     {
@@ -203,7 +203,7 @@
         "go build succeeds"
       ],
       "priority": 13,
-      "passes": false,
+      "passes": true,
       "notes": "Actually perform the merge, handling edge cases"
     },
     {
@@ -220,7 +220,7 @@
         "go build succeeds"
       ],
       "priority": 14,
-      "passes": false,
+      "passes": true,
       "notes": "Entry point for running identity resolution"
     },
     {
@@ -237,7 +237,7 @@
         "go build succeeds"
       ],
       "priority": 15,
-      "passes": false,
+      "passes": true,
       "notes": "Human review and approval of merge suggestions"
     },
     {
@@ -253,7 +253,7 @@
         "go build succeeds"
       ],
       "priority": 16,
-      "passes": false,
+      "passes": true,
       "notes": "View the identity graph for a person"
     },
     {
@@ -268,7 +268,7 @@
         "go build succeeds"
       ],
       "priority": 17,
-      "passes": false,
+      "passes": true,
       "notes": "Dashboard view of identity resolution completeness"
     },
     {
@@ -283,7 +283,7 @@
         "go build succeeds"
       ],
       "priority": 18,
-      "passes": false,
+      "passes": true,
       "notes": "Manage ambiguous data that couldn't be attributed during extraction"
     },
     {

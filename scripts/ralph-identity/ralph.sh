@@ -13,14 +13,14 @@ echo "   Project: $PROJECT_ROOT"
 echo "   Max iterations: $MAX_ITERATIONS"
 echo ""
 
-# Check prerequisites
-if ! grep -q "CREATE TABLE conversations" "$PROJECT_ROOT/internal/db/schema.sql" 2>/dev/null; then
+# Check prerequisites (use pattern that matches "CREATE TABLE IF NOT EXISTS")
+if ! grep -q "CREATE TABLE.*conversations" "$PROJECT_ROOT/internal/db/schema.sql" 2>/dev/null; then
     echo "❌ Prerequisites not met: conversations table not found"
     echo "   Run Eve→Comms migration first (scripts/ralph/)"
     exit 1
 fi
 
-if ! grep -q "CREATE TABLE analysis_types" "$PROJECT_ROOT/internal/db/schema.sql" 2>/dev/null; then
+if ! grep -q "CREATE TABLE.*analysis_types" "$PROJECT_ROOT/internal/db/schema.sql" 2>/dev/null; then
     echo "❌ Prerequisites not met: analysis_types table not found"
     echo "   Run Eve→Comms migration first (scripts/ralph/)"
     exit 1
@@ -37,14 +37,9 @@ for i in $(seq 1 $MAX_ITERATIONS); do
     echo "═══════════════════════════════════════════════════════════════"
     echo ""
     
-    # Run the agent with the prompt
-    # Replace 'amp' with your preferred agent runner:
-    # - amp: npx --yes @sourcegraph/amp
-    # - claude: claude --dangerously-skip-permissions
-    # - cursor: (run from Cursor IDE)
-    
+    # Run the agent with the prompt using Claude Code CLI
     OUTPUT=$(cat "$SCRIPT_DIR/prompt.md" \
-        | npx --yes @sourcegraph/amp --dangerously-allow-all 2>&1 \
+        | claude --dangerously-skip-permissions 2>&1 \
         | tee /dev/stderr) || true
     
     # Check for completion signal

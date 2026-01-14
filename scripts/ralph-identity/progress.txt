@@ -263,3 +263,21 @@ Started: (pending Eve migration completion)
   - Error handling: silently skip if person creation fails (don't block sync)
   - Stats tracking enables visibility into how many third parties are discovered
 
+
+## 2026-01-13 - [US-034] REFINEMENT - Move pii_extraction_v1 registration to compute seed
+- Refactored pii_extraction_v1 registration from schema.sql INSERT to compute seed command
+- Matches pattern used for convo-all-v1 (more maintainable, explicit, idempotent)
+- Added to cmd/comms/main.go in computeSeedCmd alongside convo-all-v1
+- Created piiFacetsConfig with 19 mapping rules for major PII types
+- Embedded comprehensive PII extraction prompt (6860 bytes) with taxonomy, rules, and output format
+- Removed schema.sql INSERT statement to avoid duplication
+- Files changed: cmd/comms/main.go, internal/db/schema.sql
+- **Learnings:**
+  - Compute seed pattern is preferred over schema.sql INSERTs for analysis types
+  - ON CONFLICT(name) DO NOTHING ensures idempotency
+  - Facets config uses simpler "mappings" structure: [{"json_path": "...", "facet_type": "..."}]
+  - Embedding prompt as Go string is easier than SQL escaping (no quote doubling)
+  - facets_config_json defines extraction rules that engine.go uses to parse LLM JSON output
+  - Analysis type prompt uses {{{conversation_text}}} placeholder filled by compute engine
+
+---

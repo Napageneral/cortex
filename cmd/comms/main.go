@@ -2503,6 +2503,315 @@ queryable event store with identity resolution.`,
 	identifyCmd.AddCommand(identifySuggestionsCmd)
 	identifyCmd.AddCommand(identifyAcceptCmd)
 	identifyCmd.AddCommand(identifyRejectCmd)
+
+	// identify resolve - run full identity resolution
+	var resolveAutoMerge bool
+	var resolveDryRun bool
+	identifyResolveCmd := &cobra.Command{
+		Use:   "resolve",
+		Short: "Run identity resolution to find and merge matching persons",
+		Long: `Run the identity resolution algorithm to detect matching persons
+and generate merge suggestions.
+
+The algorithm runs in three phases:
+1. Hard identifier collisions (same email, phone, etc.)
+2. Compound matches (name + birthdate, name + employer + city)
+3. Soft identifier accumulation (weighted scoring)`,
+		Run: func(cmd *cobra.Command, args []string) {
+			type Result struct {
+				OK                      bool `json:"ok"`
+				HardCollisions          int  `json:"hard_collisions"`
+				CompoundMatches         int  `json:"compound_matches"`
+				SoftAccumulations       int  `json:"soft_accumulations"`
+				MergeSuggestionsCreated int  `json:"merge_suggestions_created"`
+				AutoMergesExecuted      int  `json:"auto_merges_executed,omitempty"`
+				Message                 string `json:"message,omitempty"`
+			}
+
+			database, err := db.Open()
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to open database: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			if resolveDryRun {
+				// Just show what would happen
+				hardCollisions, _ := identify.DetectHardIDCollisions(database)
+				compoundMatches, _ := identify.DetectCompoundMatches(database)
+				softScores, _ := identify.ScoreSoftIdentifiers(database)
+
+				result := Result{
+					OK:              true,
+					HardCollisions:  len(hardCollisions),
+					CompoundMatches: len(compoundMatches),
+					Message:         "Dry run - no changes made",
+				}
+				for _, s := range softScores {
+					if s.Score >= 0.6 {
+						result.SoftAccumulations++
+					}
+				}
+
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Println("Dry run results:")
+					fmt.Printf("  Hard identifier collisions: %d\n", result.HardCollisions)
+					fmt.Printf("  Compound matches: %d\n", result.CompoundMatches)
+					fmt.Printf("  Soft accumulation matches (>=0.6): %d\n", result.SoftAccumulations)
+				}
+				return
+			}
+
+			res, err := identify.RunFullResolution(database, resolveAutoMerge)
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to run resolution: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			result := Result{
+				OK:                      true,
+				HardCollisions:          res.HardCollisions,
+				CompoundMatches:         res.CompoundMatches,
+				SoftAccumulations:       res.SoftAccumulations,
+				MergeSuggestionsCreated: res.MergeSuggestionsCreated,
+				AutoMergesExecuted:      res.AutoMergesExecuted,
+			}
+
+			if jsonOutput {
+				printJSON(result)
+			} else {
+				fmt.Println("✓ Identity resolution complete:")
+				fmt.Printf("  Hard identifier collisions: %d\n", res.HardCollisions)
+				fmt.Printf("  Compound matches: %d\n", res.CompoundMatches)
+				fmt.Printf("  Soft accumulations: %d\n", res.SoftAccumulations)
+				fmt.Printf("  Merge suggestions created: %d\n", res.MergeSuggestionsCreated)
+				if resolveAutoMerge {
+					fmt.Printf("  Auto-merges executed: %d\n", res.AutoMergesExecuted)
+				} else {
+					fmt.Println("\nUse 'comms identify merges' to review pending suggestions")
+				}
+			}
+		},
+	}
+	identifyResolveCmd.Flags().BoolVar(&resolveAutoMerge, "auto", false, "Automatically execute high-confidence merges")
+	identifyResolveCmd.Flags().BoolVar(&resolveDryRun, "dry-run", false, "Show what would be detected without making changes")
+
+	// identify merges - list pending merge events
+	var mergesStatus string
+	var mergesAutoOnly bool
+	var mergesLimit int
+	identifyMergesCmd := &cobra.Command{
+		Use:   "merges",
+		Short: "List pending identity merge suggestions",
+		Run: func(cmd *cobra.Command, args []string) {
+			type MergeInfo struct {
+				ID              string   `json:"id"`
+				SourcePersonID  string   `json:"source_person_id"`
+				SourceName      string   `json:"source_name"`
+				TargetPersonID  string   `json:"target_person_id"`
+				TargetName      string   `json:"target_name"`
+				MergeType       string   `json:"merge_type"`
+				Confidence      float64  `json:"confidence"`
+				AutoEligible    bool     `json:"auto_eligible"`
+				TriggeringFacts []string `json:"triggering_facts,omitempty"`
+			}
+
+			type Result struct {
+				OK      bool        `json:"ok"`
+				Merges  []MergeInfo `json:"merges"`
+				Message string      `json:"message,omitempty"`
+			}
+
+			database, err := db.Open()
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to open database: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			status := mergesStatus
+			if status == "" {
+				status = "pending"
+			}
+
+			merges, err := identify.ListPendingMerges(database, status, mergesLimit)
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to list merges: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			var infos []MergeInfo
+			for _, m := range merges {
+				if mergesAutoOnly && !m.AutoEligible {
+					continue
+				}
+
+				info := MergeInfo{
+					ID:             m.ID,
+					SourcePersonID: m.SourcePersonID,
+					TargetPersonID: m.TargetPersonID,
+					MergeType:      m.MergeType,
+					Confidence:     m.SimilarityScore,
+					AutoEligible:   m.AutoEligible,
+				}
+
+				// Get person names
+				database.QueryRow(`SELECT canonical_name FROM persons WHERE id = ?`, m.SourcePersonID).Scan(&info.SourceName)
+				database.QueryRow(`SELECT canonical_name FROM persons WHERE id = ?`, m.TargetPersonID).Scan(&info.TargetName)
+
+				for _, f := range m.TriggeringFacts {
+					info.TriggeringFacts = append(info.TriggeringFacts, fmt.Sprintf("%s=%s", f.FactType, f.FactValue))
+				}
+
+				infos = append(infos, info)
+			}
+
+			result := Result{OK: true, Merges: infos}
+
+			if jsonOutput {
+				printJSON(result)
+			} else {
+				if len(infos) == 0 {
+					fmt.Println("No pending merge suggestions.")
+					fmt.Println("\nRun 'comms identify resolve' to generate suggestions")
+				} else {
+					fmt.Printf("Found %d %s merge suggestions:\n\n", len(infos), status)
+					for _, m := range infos {
+						autoStr := ""
+						if m.AutoEligible {
+							autoStr = " [AUTO]"
+						}
+						fmt.Printf("  [%s]%s %s ↔ %s\n", m.ID[:8], autoStr, m.SourceName, m.TargetName)
+						fmt.Printf("    Type: %s, Confidence: %.0f%%\n", m.MergeType, m.Confidence*100)
+						if len(m.TriggeringFacts) > 0 {
+							fmt.Printf("    Facts: %v\n", m.TriggeringFacts)
+						}
+						fmt.Println()
+					}
+					fmt.Println("Use 'comms identify accept <id>' or 'comms identify reject <id>'")
+				}
+			}
+		},
+	}
+	identifyMergesCmd.Flags().StringVar(&mergesStatus, "status", "pending", "Filter by status (pending, accepted, rejected, executed)")
+	identifyMergesCmd.Flags().BoolVar(&mergesAutoOnly, "auto-eligible", false, "Show only auto-eligible merges")
+	identifyMergesCmd.Flags().IntVar(&mergesLimit, "limit", 50, "Maximum merges to show")
+
+	// identify accept-all - accept all auto-eligible merges
+	identifyAcceptAllCmd := &cobra.Command{
+		Use:   "accept-all",
+		Short: "Accept and execute all auto-eligible merges",
+		Run: func(cmd *cobra.Command, args []string) {
+			type Result struct {
+				OK       bool   `json:"ok"`
+				Executed int    `json:"executed"`
+				Message  string `json:"message,omitempty"`
+			}
+
+			database, err := db.Open()
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to open database: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			executed, err := identify.ExecuteAutoMerges(database)
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to execute merges: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			result := Result{OK: true, Executed: executed}
+
+			if jsonOutput {
+				printJSON(result)
+			} else {
+				fmt.Printf("✓ Executed %d auto-eligible merges\n", executed)
+			}
+		},
+	}
+
+	// identify status - show resolution statistics
+	identifyStatusCmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show identity resolution statistics",
+		Run: func(cmd *cobra.Command, args []string) {
+			database, err := db.Open()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			stats, err := identify.GetResolutionStats(database)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			if jsonOutput {
+				printJSON(map[string]any{
+					"ok":                   true,
+					"active_persons":       stats.ActivePersons,
+					"merged_persons":       stats.MergedPersons,
+					"total_facts":          stats.TotalFacts,
+					"hard_identifiers":     stats.HardIdentifiers,
+					"pending_merges":       stats.PendingMerges,
+					"auto_eligible_merges": stats.AutoEligibleMerges,
+					"unresolved_facts":     stats.UnresolvedFacts,
+					"cross_channel_linked": stats.CrossChannelLinked,
+				})
+			} else {
+				fmt.Println("Identity Resolution Status:")
+				fmt.Printf("  Active persons: %d\n", stats.ActivePersons)
+				fmt.Printf("  Merged persons: %d\n", stats.MergedPersons)
+				fmt.Printf("  Total facts: %d\n", stats.TotalFacts)
+				fmt.Printf("  Hard identifiers: %d\n", stats.HardIdentifiers)
+				fmt.Println()
+				fmt.Printf("  Pending merges: %d\n", stats.PendingMerges)
+				fmt.Printf("  Auto-eligible: %d\n", stats.AutoEligibleMerges)
+				fmt.Printf("  Unresolved facts: %d\n", stats.UnresolvedFacts)
+				fmt.Printf("  Cross-channel linked: %d persons\n", stats.CrossChannelLinked)
+			}
+		},
+	}
+
+	identifyCmd.AddCommand(identifyResolveCmd)
+	identifyCmd.AddCommand(identifyMergesCmd)
+	identifyCmd.AddCommand(identifyAcceptAllCmd)
+	identifyCmd.AddCommand(identifyStatusCmd)
 	rootCmd.AddCommand(identifyCmd)
 
 	// events command
@@ -3001,6 +3310,469 @@ queryable event store with identity resolution.`,
 	peopleCmd.Flags().String("search", "", "Search for persons by name")
 	peopleCmd.Flags().Int("top", 0, "Show only top N persons by event count")
 	rootCmd.AddCommand(peopleCmd)
+
+	// person command - view person details and facts
+	personCmd := &cobra.Command{
+		Use:   "person",
+		Short: "View and manage person details",
+	}
+
+	// person facts - show all facts for a person
+	var factsIncludeEvidence bool
+	var factsCategory string
+	personFactsCmd := &cobra.Command{
+		Use:   "facts <person_name_or_id>",
+		Short: "Show all extracted facts for a person",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			type FactInfo struct {
+				Category  string  `json:"category"`
+				FactType  string  `json:"fact_type"`
+				FactValue string  `json:"fact_value"`
+				Confidence float64 `json:"confidence"`
+				Source    string  `json:"source,omitempty"`
+				Channel   string  `json:"channel,omitempty"`
+				Evidence  string  `json:"evidence,omitempty"`
+			}
+
+			type Result struct {
+				OK         bool       `json:"ok"`
+				PersonID   string     `json:"person_id"`
+				PersonName string     `json:"person_name"`
+				Facts      []FactInfo `json:"facts"`
+				Message    string     `json:"message,omitempty"`
+			}
+
+			database, err := db.Open()
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to open database: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			// Find person by name or ID
+			personRef := args[0]
+			var personID, personName string
+
+			// Try by ID first
+			err = database.QueryRow(`SELECT id, canonical_name FROM persons WHERE id = ?`, personRef).Scan(&personID, &personName)
+			if err != nil {
+				// Try by name
+				err = database.QueryRow(`
+					SELECT id, canonical_name FROM persons 
+					WHERE canonical_name LIKE ? OR display_name LIKE ?
+					LIMIT 1
+				`, "%"+personRef+"%", "%"+personRef+"%").Scan(&personID, &personName)
+			}
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Person not found: %s", personRef)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			// Get facts
+			var facts []identify.PersonFact
+			if factsCategory != "" {
+				facts, err = identify.GetFactsByCategory(database, personID, factsCategory)
+			} else {
+				facts, err = identify.GetFactsForPerson(database, personID)
+			}
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to get facts: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			var infos []FactInfo
+			for _, f := range facts {
+				info := FactInfo{
+					Category:   f.Category,
+					FactType:   f.FactType,
+					FactValue:  f.FactValue,
+					Confidence: f.Confidence,
+					Source:     f.SourceType,
+				}
+				if f.SourceChannel != nil {
+					info.Channel = *f.SourceChannel
+				}
+				if factsIncludeEvidence && f.Evidence != nil {
+					info.Evidence = *f.Evidence
+				}
+				infos = append(infos, info)
+			}
+
+			result := Result{OK: true, PersonID: personID, PersonName: personName, Facts: infos}
+
+			if jsonOutput {
+				printJSON(result)
+			} else {
+				fmt.Printf("Facts for %s (%s):\n\n", personName, personID[:8])
+				if len(infos) == 0 {
+					fmt.Println("  No facts extracted yet.")
+					fmt.Println("\n  Run 'comms extract pii' to extract facts from conversations")
+				} else {
+					currentCat := ""
+					for _, f := range infos {
+						if f.Category != currentCat {
+							currentCat = f.Category
+							fmt.Printf("\n  [%s]\n", currentCat)
+						}
+						confidenceStr := ""
+						if f.Confidence >= 0.8 {
+							confidenceStr = "●●●"
+						} else if f.Confidence >= 0.5 {
+							confidenceStr = "●●○"
+						} else {
+							confidenceStr = "●○○"
+						}
+						fmt.Printf("    %s: %s  %s\n", f.FactType, f.FactValue, confidenceStr)
+						if f.Evidence != "" {
+							// Truncate evidence
+							ev := f.Evidence
+							if len(ev) > 80 {
+								ev = ev[:77] + "..."
+							}
+							fmt.Printf("      └─ \"%s\"\n", ev)
+						}
+					}
+				}
+			}
+		},
+	}
+	personFactsCmd.Flags().BoolVar(&factsIncludeEvidence, "include-evidence", false, "Include source evidence quotes")
+	personFactsCmd.Flags().StringVar(&factsCategory, "category", "", "Filter by category (core_identity, contact_information, etc.)")
+
+	// person profile - formatted profile view
+	personProfileCmd := &cobra.Command{
+		Use:   "profile <person_name_or_id>",
+		Short: "Show formatted profile view for a person",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			database, err := db.Open()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			// Find person
+			personRef := args[0]
+			var personID, personName string
+			var displayName sql.NullString
+
+			err = database.QueryRow(`SELECT id, canonical_name, display_name FROM persons WHERE id = ?`, personRef).Scan(&personID, &personName, &displayName)
+			if err != nil {
+				err = database.QueryRow(`
+					SELECT id, canonical_name, display_name FROM persons 
+					WHERE canonical_name LIKE ? OR display_name LIKE ?
+					LIMIT 1
+				`, "%"+personRef+"%", "%"+personRef+"%").Scan(&personID, &personName, &displayName)
+			}
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: Person not found: %s\n", personRef)
+				os.Exit(1)
+			}
+
+			// Get all facts
+			facts, _ := identify.GetFactsForPerson(database, personID)
+
+			// Get identities
+			rows, _ := database.Query(`SELECT channel, identifier FROM identities WHERE person_id = ?`, personID)
+			var identities []string
+			if rows != nil {
+				for rows.Next() {
+					var ch, id string
+					rows.Scan(&ch, &id)
+					identities = append(identities, fmt.Sprintf("%s:%s", ch, id))
+				}
+				rows.Close()
+			}
+
+			// Get event count
+			var eventCount int
+			database.QueryRow(`SELECT COUNT(*) FROM event_participants WHERE person_id = ?`, personID).Scan(&eventCount)
+
+			// Format output
+			fmt.Println("╭─────────────────────────────────────────╮")
+			fmt.Printf("│  %s\n", personName)
+			if displayName.Valid && displayName.String != "" && displayName.String != personName {
+				fmt.Printf("│  aka %s\n", displayName.String)
+			}
+			fmt.Println("╰─────────────────────────────────────────╯")
+			fmt.Printf("  ID: %s\n", personID[:8])
+			fmt.Printf("  Events: %d\n", eventCount)
+			fmt.Println()
+
+			if len(identities) > 0 {
+				fmt.Println("  📇 Identities:")
+				for _, id := range identities {
+					fmt.Printf("     • %s\n", id)
+				}
+				fmt.Println()
+			}
+
+			// Group facts by category
+			factsByCategory := make(map[string][]identify.PersonFact)
+			for _, f := range facts {
+				factsByCategory[f.Category] = append(factsByCategory[f.Category], f)
+			}
+
+			categoryOrder := []string{
+				identify.CategoryCoreIdentity,
+				identify.CategoryContactInfo,
+				identify.CategoryProfessional,
+				identify.CategoryRelationships,
+				identify.CategoryLocation,
+				identify.CategoryEducation,
+			}
+
+			categoryEmoji := map[string]string{
+				identify.CategoryCoreIdentity:  "👤",
+				identify.CategoryContactInfo:   "📞",
+				identify.CategoryProfessional:  "💼",
+				identify.CategoryRelationships: "👨‍👩‍👧‍👦",
+				identify.CategoryLocation:      "📍",
+				identify.CategoryEducation:     "🎓",
+				identify.CategoryDigitalIdentity: "🌐",
+				identify.CategoryGovernmentID:  "🪪",
+			}
+
+			for _, cat := range categoryOrder {
+				catFacts, ok := factsByCategory[cat]
+				if !ok || len(catFacts) == 0 {
+					continue
+				}
+				emoji := categoryEmoji[cat]
+				if emoji == "" {
+					emoji = "📋"
+				}
+				fmt.Printf("  %s %s:\n", emoji, cat)
+				for _, f := range catFacts {
+					fmt.Printf("     %s: %s\n", f.FactType, f.FactValue)
+				}
+				fmt.Println()
+			}
+		},
+	}
+
+	personCmd.AddCommand(personFactsCmd)
+	personCmd.AddCommand(personProfileCmd)
+	rootCmd.AddCommand(personCmd)
+
+	// unattributed command - manage unattributed facts
+	unattributedCmd := &cobra.Command{
+		Use:   "unattributed",
+		Short: "Manage facts that couldn't be attributed to a person",
+	}
+
+	// unattributed list - list unattributed facts
+	var unattributedUnresolved bool
+	unattributedListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List unattributed facts",
+		Run: func(cmd *cobra.Command, args []string) {
+			type FactInfo struct {
+				ID        string `json:"id"`
+				FactType  string `json:"fact_type"`
+				FactValue string `json:"fact_value"`
+				SharedBy  string `json:"shared_by,omitempty"`
+				Context   string `json:"context,omitempty"`
+				Resolved  bool   `json:"resolved"`
+			}
+
+			type Result struct {
+				OK      bool       `json:"ok"`
+				Facts   []FactInfo `json:"facts"`
+				Message string     `json:"message,omitempty"`
+			}
+
+			database, err := db.Open()
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to open database: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			query := `
+				SELECT uf.id, uf.fact_type, uf.fact_value, p.canonical_name, uf.context, uf.resolved_to_person_id
+				FROM unattributed_facts uf
+				LEFT JOIN persons p ON uf.shared_by_person_id = p.id
+			`
+			if unattributedUnresolved {
+				query += ` WHERE uf.resolved_to_person_id IS NULL`
+			}
+			query += ` ORDER BY uf.created_at DESC LIMIT 100`
+
+			rows, err := database.Query(query)
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to query: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			defer rows.Close()
+
+			var infos []FactInfo
+			for rows.Next() {
+				var info FactInfo
+				var sharedBy, context, resolvedTo sql.NullString
+				rows.Scan(&info.ID, &info.FactType, &info.FactValue, &sharedBy, &context, &resolvedTo)
+				if sharedBy.Valid {
+					info.SharedBy = sharedBy.String
+				}
+				if context.Valid {
+					info.Context = context.String
+				}
+				info.Resolved = resolvedTo.Valid
+				infos = append(infos, info)
+			}
+
+			result := Result{OK: true, Facts: infos}
+
+			if jsonOutput {
+				printJSON(result)
+			} else {
+				if len(infos) == 0 {
+					fmt.Println("No unattributed facts found.")
+				} else {
+					fmt.Printf("Found %d unattributed facts:\n\n", len(infos))
+					for _, f := range infos {
+						resolvedStr := ""
+						if f.Resolved {
+							resolvedStr = " [RESOLVED]"
+						}
+						fmt.Printf("  [%s]%s %s: %s\n", f.ID[:8], resolvedStr, f.FactType, f.FactValue)
+						if f.SharedBy != "" {
+							fmt.Printf("    Shared by: %s\n", f.SharedBy)
+						}
+						if f.Context != "" {
+							ctx := f.Context
+							if len(ctx) > 60 {
+								ctx = ctx[:57] + "..."
+							}
+							fmt.Printf("    Context: %s\n", ctx)
+						}
+						fmt.Println()
+					}
+				}
+			}
+		},
+	}
+	unattributedListCmd.Flags().BoolVar(&unattributedUnresolved, "unresolved", false, "Show only unresolved facts")
+
+	// unattributed attribute - resolve a fact to a person
+	unattributedAttributeCmd := &cobra.Command{
+		Use:   "attribute <fact_id> <person_name_or_id>",
+		Short: "Attribute a fact to a person",
+		Args:  cobra.ExactArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			type Result struct {
+				OK      bool   `json:"ok"`
+				Message string `json:"message,omitempty"`
+			}
+
+			database, err := db.Open()
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to open database: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			factRef := args[0]
+			personRef := args[1]
+
+			// Find the fact (try full ID first, then prefix match)
+			var factID string
+			err = database.QueryRow(`SELECT id FROM unattributed_facts WHERE id = ?`, factRef).Scan(&factID)
+			if err != nil {
+				err = database.QueryRow(`SELECT id FROM unattributed_facts WHERE id LIKE ?`, factRef+"%").Scan(&factID)
+			}
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Fact not found: %s", factRef)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			// Find person
+			var personID string
+			err = database.QueryRow(`SELECT id FROM persons WHERE id = ?`, personRef).Scan(&personID)
+			if err != nil {
+				err = database.QueryRow(`
+					SELECT id FROM persons 
+					WHERE canonical_name LIKE ? OR display_name LIKE ?
+					LIMIT 1
+				`, "%"+personRef+"%", "%"+personRef+"%").Scan(&personID)
+			}
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Person not found: %s", personRef)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			// Update the fact
+			now := time.Now().Unix()
+			_, err = database.Exec(`
+				UPDATE unattributed_facts 
+				SET resolved_to_person_id = ?, resolution_evidence = 'manual attribution', resolved_at = ?
+				WHERE id = ?
+			`, personID, now, factID)
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to update: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			result := Result{OK: true, Message: "Fact attributed successfully"}
+
+			if jsonOutput {
+				printJSON(result)
+			} else {
+				fmt.Println("✓ Fact attributed successfully")
+			}
+		},
+	}
+
+	unattributedCmd.AddCommand(unattributedListCmd)
+	unattributedCmd.AddCommand(unattributedAttributeCmd)
+	rootCmd.AddCommand(unattributedCmd)
 
 	// timeline command
 	timelineCmd := &cobra.Command{
@@ -4242,11 +5014,198 @@ Conversation:
 				os.Exit(1)
 			}
 
+			// Seed pii_extraction_v1 analysis type
+			piiPromptTemplate := `# PII Extraction
+
+Extract ALL personally identifiable information from this conversation chunk. This creates a comprehensive identity graph for each person mentioned, enabling cross-channel identity resolution through identifier collisions.
+
+## Task
+
+Extract ALL PII for EVERY person mentioned in this conversation:
+1. **The primary contact** - the person the user is communicating with
+2. **The user themselves** - any PII about the user mentioned in the conversation
+3. **Third parties** - any other people mentioned (family, friends, colleagues, etc.)
+
+For each piece of information:
+- Quote the exact evidence from the messages
+- Indicate confidence level (high/medium/low)
+- Note whether this is self-disclosed or mentioned by someone else
+
+## Complete PII Taxonomy
+
+Extract any of the following if present:
+
+### Core Identity
+full_legal_name, given_name, middle_name, family_name, maiden_name, previous_names, nicknames, aliases, date_of_birth, age, birth_year, place_of_birth, gender, pronouns, nationality, ethnicity, languages
+
+### Physical Description
+height, weight, eye_color, hair_color, hair_style, skin_tone, distinguishing_marks, glasses, facial_hair
+
+### Contact Information
+email_personal, email_work, email_school, email_other, phone_mobile, phone_home, phone_work, phone_fax, address_home, address_work, address_mailing, address_previous
+
+### Digital Identity
+username_*, social_twitter, social_instagram, social_linkedin, social_facebook, social_tiktok, social_youtube, social_reddit, social_discord, social_other, website_personal, website_business, gaming_handle, login_email, password_hints
+
+### Relationships
+spouse, partner, ex_spouse, children, parents, siblings, grandparents, grandchildren, aunts_uncles, cousins, in_laws, nieces_nephews, friends, roommates, neighbors, pets, emergency_contact, next_of_kin
+
+### Professional
+**IMPORTANT**: Distinguish between EMPLOYMENT (working FOR someone) vs OWNERSHIP (owning a business).
+
+Employment: employer_current, employer_previous, job_title_current, job_title_previous, department, role_description, manager, direct_reports, colleagues, employee_id
+
+Ownership: business_owned, business_role, business_founded, business_invested, board_member_of
+
+General: profession, industry, years_experience, professional_certifications, professional_licenses, work_email, work_phone, work_address, business_partners, salary, work_schedule
+
+### Education
+school_current, school_previous, degree, major, minor, graduation_year, gpa, student_id, certifications, licenses, awards, activities
+
+### Government & Legal IDs
+ssn, passport_number, passport_country, drivers_license, drivers_license_state, national_id, visa_type, visa_status, tax_id, voter_registration, military_id, criminal_record, court_cases
+
+### Financial
+bank_name, bank_account, credit_cards, paypal, venmo, cashapp, zelle, crypto_wallet, income, net_worth, credit_score, debts, mortgage, investments
+
+### Medical & Health
+conditions, disabilities, medications, allergies, blood_type, height_medical, weight_medical, doctor, dentist, specialists, hospital, insurance_health, insurance_dental, pharmacy, medical_history, mental_health
+
+### Life Events & Dates
+birthday, birth_date_full, wedding_date, divorce_date, graduation_dates, job_start_dates, job_end_dates, move_dates, retirement_date, death_date, significant_events
+
+### Location & Presence
+location_current, location_state, location_country, location_timezone, location_previous, location_hometown, location_vacation, location_frequent, commute, travel_current, travel_planned, travel_history
+
+### Preferences & Lifestyle
+political_affiliation, religious_affiliation, hobbies, sports_played, sports_watched, music_preferences, movie_preferences, book_preferences, food_preferences, dietary_restrictions, restaurant_favorites, drink_preferences, smoking, alcohol, exercise, sleep_schedule
+
+### Vehicles & Property
+vehicle_make, vehicle_model, vehicle_year, vehicle_color, license_plate, vehicle_previous, motorcycle, boat, property_owned, rental
+
+## Output Format
+
+Return JSON with this structure:
+
+{
+  "persons": [
+    {
+      "reference": "Dad",
+      "is_primary_contact": true,
+      "confidence_is_primary": 0.99,
+      "pii": {
+        "core_identity": {
+          "full_legal_name": {
+            "value": "James Brandt",
+            "confidence": "high",
+            "evidence": ["meeting up with Jim and Janet", "Jim@napageneralstore.com"],
+            "self_disclosed": false
+          },
+          "nicknames": {
+            "value": ["Jim", "Dad"],
+            "confidence": "high",
+            "evidence": ["labeled as Dad in contacts", "refers to self as Jim"],
+            "self_disclosed": true
+          }
+        },
+        "contact_information": {
+          "email_work": {
+            "value": "jim@napageneralstore.com",
+            "confidence": "high",
+            "evidence": ["the recovery email is my jim@napageneralstore.com"],
+            "self_disclosed": true
+          }
+        },
+        "professional": {
+          "business_owned": {
+            "value": ["Napa General Store"],
+            "confidence": "high",
+            "evidence": ["jim@napageneralstore.com", "owns the store"]
+          }
+        }
+      }
+    }
+  ],
+  "new_identity_candidates": [
+    {
+      "reference": "Janet",
+      "known_facts": {
+        "given_name": "Janet",
+        "relationship_to_primary": "friend/travel companion"
+      }
+    }
+  ],
+  "unattributed_facts": [
+    {
+      "fact_type": "phone",
+      "fact_value": "+15551234567",
+      "shared_by": "Dad",
+      "context": "Sent as standalone message with no explanation",
+      "possible_attributions": ["Dad's alternate number", "Third party contact"]
+    }
+  ]
+}
+
+## Important Rules
+
+1. **Extract EVERYTHING** - Even small details can help with identity resolution
+2. **Quote exact evidence** - Always include message text that supports extraction
+3. **Attribute correctly** - Be very careful about WHO each piece of PII belongs to
+4. **Flag sensitive data** - Mark SSN, financial, medical info
+5. **Note self-disclosure** - Mark when someone shares their own info vs being mentioned
+6. **Create identity candidates** - Flag third parties with enough detail
+7. **Use unattributed_facts** - If identifier shared without clear ownership, put in unattributed_facts
+8. **Owner vs Employer** - Someone who owns a restaurant is NOT employed BY it
+9. **Confidence levels**: high (explicit), medium (implied), low (inferred)
+10. **Don't hallucinate** - Only extract what's in the messages
+
+Conversation:
+{{{conversation_text}}}`
+
+			piiFacetsConfig := `{
+				"mappings": [
+					{"json_path": "persons[].pii.core_identity.full_legal_name.value", "facet_type": "pii_full_name"},
+					{"json_path": "persons[].pii.core_identity.given_name.value", "facet_type": "pii_given_name"},
+					{"json_path": "persons[].pii.core_identity.family_name.value", "facet_type": "pii_family_name"},
+					{"json_path": "persons[].pii.core_identity.nicknames.value[]", "facet_type": "pii_nickname"},
+					{"json_path": "persons[].pii.contact_information.email_personal.value", "facet_type": "pii_email_personal"},
+					{"json_path": "persons[].pii.contact_information.email_work.value", "facet_type": "pii_email_work"},
+					{"json_path": "persons[].pii.contact_information.phone_mobile.value", "facet_type": "pii_phone_mobile"},
+					{"json_path": "persons[].pii.contact_information.phone_home.value", "facet_type": "pii_phone_home"},
+					{"json_path": "persons[].pii.contact_information.phone_work.value", "facet_type": "pii_phone_work"},
+					{"json_path": "persons[].pii.contact_information.address_home.value", "facet_type": "pii_address_home"},
+					{"json_path": "persons[].pii.digital_identity.social_twitter.value", "facet_type": "pii_social_twitter"},
+					{"json_path": "persons[].pii.digital_identity.social_instagram.value", "facet_type": "pii_social_instagram"},
+					{"json_path": "persons[].pii.digital_identity.social_linkedin.value", "facet_type": "pii_social_linkedin"},
+					{"json_path": "persons[].pii.professional.employer_current.value", "facet_type": "pii_employer"},
+					{"json_path": "persons[].pii.professional.business_owned.value[]", "facet_type": "pii_business_owned"},
+					{"json_path": "persons[].pii.professional.profession.value", "facet_type": "pii_profession"},
+					{"json_path": "persons[].pii.location_presence.location_current.value", "facet_type": "pii_location"},
+					{"json_path": "persons[].pii.relationships.spouse.value", "facet_type": "pii_spouse"},
+					{"json_path": "persons[].pii.relationships.children.value[]", "facet_type": "pii_child"}
+				]
+			}`
+
+			_, err = database.ExecContext(ctx, `
+				INSERT INTO analysis_types (id, name, version, description, output_type, facets_config_json, prompt_template, model, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(name) DO NOTHING
+			`, "pii_extraction_v1", "pii_extraction", "1.0.0",
+				"Extract all PII from conversations for identity resolution",
+				"structured", piiFacetsConfig, piiPromptTemplate,
+				"gemini-2.0-flash", now, now)
+
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error seeding pii_extraction_v1: %v\n", err)
+				os.Exit(1)
+			}
+
 			if jsonOutput {
 				printJSON(map[string]any{"ok": true, "message": "Seeded analysis types"})
 			} else {
 				fmt.Println("Seeded analysis types:")
 				fmt.Println("  - convo-all-v1 (structured extraction)")
+				fmt.Println("  - pii_extraction_v1 (PII extraction for identity resolution)")
 			}
 		},
 	}
@@ -4495,6 +5454,361 @@ Examples:
 	searchCmd.Flags().IntVar(&searchLimit, "limit", 10, "Maximum number of results")
 	searchCmd.Flags().StringVar(&searchModel, "model", "text-embedding-004", "Embedding model to use")
 	rootCmd.AddCommand(searchCmd)
+
+	// ==================== EXTRACT COMMAND ====================
+	extractCmd := &cobra.Command{
+		Use:   "extract",
+		Short: "Extract data from conversations using AI",
+	}
+
+	// extract pii - extract PII from conversations
+	var extractChannel string
+	var extractSince string
+	var extractConversation string
+	var extractPerson string
+	var extractDryRun bool
+	var extractLimit int
+
+	extractPIICmd := &cobra.Command{
+		Use:   "pii",
+		Short: "Extract PII from conversations for identity resolution",
+		Long: `Extract all personally identifiable information from conversations
+using AI analysis. Creates person_facts for identity resolution.
+
+Examples:
+  comms extract pii --channel imessage --since 30d
+  comms extract pii --conversation <conversation_id>
+  comms extract pii --person "Dad" --limit 50`,
+		Run: func(cmd *cobra.Command, args []string) {
+			type Result struct {
+				OK               bool   `json:"ok"`
+				JobsEnqueued     int    `json:"jobs_enqueued"`
+				ConversationsToProcess int `json:"conversations_to_process,omitempty"`
+				Message          string `json:"message,omitempty"`
+			}
+
+			database, err := db.Open()
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to open database: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			// Build query to find conversations to process
+			querySQL := `
+				SELECT c.id FROM conversations c
+				WHERE NOT EXISTS (
+					SELECT 1 FROM analysis_runs ar
+					JOIN analysis_types at ON ar.analysis_type_id = at.id
+					WHERE ar.conversation_id = c.id
+					AND at.name = 'pii_extraction'
+				)
+			`
+			var queryArgs []interface{}
+
+			if extractChannel != "" {
+				querySQL += ` AND c.channel = ?`
+				queryArgs = append(queryArgs, extractChannel)
+			}
+
+			if extractSince != "" {
+				// Parse since duration (e.g., "30d", "7d", "1h")
+				var sinceTime time.Time
+				if strings.HasSuffix(extractSince, "d") {
+					days, _ := fmt.Sscanf(extractSince, "%dd", new(int))
+					if days > 0 {
+						var d int
+						fmt.Sscanf(extractSince, "%dd", &d)
+						sinceTime = time.Now().AddDate(0, 0, -d)
+					}
+				} else if strings.HasSuffix(extractSince, "h") {
+					var h int
+					fmt.Sscanf(extractSince, "%dh", &h)
+					sinceTime = time.Now().Add(-time.Duration(h) * time.Hour)
+				} else {
+					// Try parsing as date
+					sinceTime, _ = time.Parse("2006-01-02", extractSince)
+				}
+				if !sinceTime.IsZero() {
+					querySQL += ` AND c.start_time >= ?`
+					queryArgs = append(queryArgs, sinceTime.Unix())
+				}
+			}
+
+			if extractConversation != "" {
+				querySQL = `SELECT c.id FROM conversations c WHERE c.id = ?`
+				queryArgs = []interface{}{extractConversation}
+			}
+
+			if extractPerson != "" {
+				querySQL = `
+					SELECT DISTINCT c.id FROM conversations c
+					JOIN conversation_events ce ON c.id = ce.conversation_id
+					JOIN event_participants ep ON ce.event_id = ep.event_id
+					JOIN persons p ON ep.person_id = p.id
+					WHERE (p.canonical_name LIKE ? OR p.display_name LIKE ?)
+					AND NOT EXISTS (
+						SELECT 1 FROM analysis_runs ar
+						JOIN analysis_types at ON ar.analysis_type_id = at.id
+						WHERE ar.conversation_id = c.id
+						AND at.name = 'pii_extraction'
+					)
+				`
+				queryArgs = []interface{}{"%" + extractPerson + "%", "%" + extractPerson + "%"}
+			}
+
+			querySQL += ` ORDER BY c.start_time DESC`
+
+			if extractLimit > 0 {
+				querySQL += fmt.Sprintf(` LIMIT %d`, extractLimit)
+			}
+
+			// Execute query
+			rows, err := database.Query(querySQL, queryArgs...)
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to query conversations: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			var convIDs []string
+			for rows.Next() {
+				var id string
+				if err := rows.Scan(&id); err != nil {
+					continue
+				}
+				convIDs = append(convIDs, id)
+			}
+			rows.Close()
+
+			if extractDryRun {
+				result := Result{
+					OK:                     true,
+					ConversationsToProcess: len(convIDs),
+					Message:                fmt.Sprintf("Would enqueue %d conversations for PII extraction", len(convIDs)),
+				}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Printf("Dry run: would enqueue %d conversations for PII extraction\n", len(convIDs))
+					if len(convIDs) > 0 && len(convIDs) <= 10 {
+						fmt.Println("\nConversations:")
+						for _, id := range convIDs {
+							fmt.Printf("  %s\n", id)
+						}
+					}
+				}
+				return
+			}
+
+			// Enqueue analysis jobs
+			apiKey := os.Getenv("GEMINI_API_KEY")
+			geminiClient := gemini.NewClient(apiKey)
+			engine, err := compute.NewEngine(database, geminiClient, compute.DefaultConfig())
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to create compute engine: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			ctx := context.Background()
+			count, err := engine.EnqueueAnalysis(ctx, "pii_extraction")
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to enqueue analysis: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			result := Result{
+				OK:           true,
+				JobsEnqueued: count,
+				Message:      fmt.Sprintf("Enqueued %d PII extraction jobs", count),
+			}
+			if jsonOutput {
+				printJSON(result)
+			} else {
+				fmt.Printf("✓ Enqueued %d PII extraction jobs\n", count)
+				fmt.Println("\nRun 'comms compute run' to process the queue")
+			}
+		},
+	}
+	extractPIICmd.Flags().StringVar(&extractChannel, "channel", "", "Filter by channel (imessage, gmail, all)")
+	extractPIICmd.Flags().StringVar(&extractSince, "since", "", "Only process conversations since (e.g., 30d, 7d, 2024-01-01)")
+	extractPIICmd.Flags().StringVar(&extractConversation, "conversation", "", "Process specific conversation ID")
+	extractPIICmd.Flags().StringVar(&extractPerson, "person", "", "Process conversations involving specific person")
+	extractPIICmd.Flags().BoolVar(&extractDryRun, "dry-run", false, "Show what would be processed without enqueueing")
+	extractPIICmd.Flags().IntVar(&extractLimit, "limit", 0, "Limit number of conversations to process")
+
+	// extract sync - sync facets to person_facts
+	extractSyncCmd := &cobra.Command{
+		Use:   "sync",
+		Short: "Sync extracted facets to person_facts table",
+		Long:  "Process completed PII extraction analysis runs and sync facets to person_facts",
+		Run: func(cmd *cobra.Command, args []string) {
+			type Result struct {
+				OK                    bool `json:"ok"`
+				AnalysisRunsProcessed int  `json:"analysis_runs_processed"`
+				FacetsProcessed       int  `json:"facets_processed"`
+				FactsCreated          int  `json:"facts_created"`
+				UnattributedCreated   int  `json:"unattributed_created"`
+				ThirdPartiesCreated   int  `json:"third_parties_created"`
+				Errors                int  `json:"errors"`
+				Message               string `json:"message,omitempty"`
+			}
+
+			database, err := db.Open()
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to open database: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			stats, err := identify.SyncFacetsToPersonFacts(database)
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to sync facets: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			result := Result{
+				OK:                    true,
+				AnalysisRunsProcessed: stats.AnalysisRunsProcessed,
+				FacetsProcessed:       stats.FacetsProcessed,
+				FactsCreated:          stats.FactsCreated,
+				UnattributedCreated:   stats.UnattributedCreated,
+				ThirdPartiesCreated:   stats.ThirdPartiesCreated,
+				Errors:                stats.Errors,
+			}
+
+			if jsonOutput {
+				printJSON(result)
+			} else {
+				fmt.Printf("✓ Synced %d analysis runs:\n", stats.AnalysisRunsProcessed)
+				fmt.Printf("  Facets processed: %d\n", stats.FacetsProcessed)
+				fmt.Printf("  Facts created: %d\n", stats.FactsCreated)
+				fmt.Printf("  Unattributed facts: %d\n", stats.UnattributedCreated)
+				fmt.Printf("  Third parties created: %d\n", stats.ThirdPartiesCreated)
+				if stats.Errors > 0 {
+					fmt.Printf("  Errors: %d\n", stats.Errors)
+				}
+			}
+		},
+	}
+
+	// extract status - show extraction status
+	extractStatusCmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show PII extraction status",
+		Run: func(cmd *cobra.Command, args []string) {
+			type Result struct {
+				OK                bool `json:"ok"`
+				TotalConversations int `json:"total_conversations"`
+				Pending           int  `json:"pending"`
+				Running           int  `json:"running"`
+				Completed         int  `json:"completed"`
+				Failed            int  `json:"failed"`
+				Blocked           int  `json:"blocked"`
+				Message           string `json:"message,omitempty"`
+			}
+
+			database, err := db.Open()
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to open database: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			var totalConvs int
+			database.QueryRow(`SELECT COUNT(*) FROM conversations`).Scan(&totalConvs)
+
+			var pending, running, completed, failed, blocked int
+			database.QueryRow(`
+				SELECT COUNT(*) FROM analysis_runs ar
+				JOIN analysis_types at ON ar.analysis_type_id = at.id
+				WHERE at.name = 'pii_extraction' AND ar.status = 'pending'
+			`).Scan(&pending)
+			database.QueryRow(`
+				SELECT COUNT(*) FROM analysis_runs ar
+				JOIN analysis_types at ON ar.analysis_type_id = at.id
+				WHERE at.name = 'pii_extraction' AND ar.status = 'running'
+			`).Scan(&running)
+			database.QueryRow(`
+				SELECT COUNT(*) FROM analysis_runs ar
+				JOIN analysis_types at ON ar.analysis_type_id = at.id
+				WHERE at.name = 'pii_extraction' AND ar.status = 'completed'
+			`).Scan(&completed)
+			database.QueryRow(`
+				SELECT COUNT(*) FROM analysis_runs ar
+				JOIN analysis_types at ON ar.analysis_type_id = at.id
+				WHERE at.name = 'pii_extraction' AND ar.status = 'failed'
+			`).Scan(&failed)
+			database.QueryRow(`
+				SELECT COUNT(*) FROM analysis_runs ar
+				JOIN analysis_types at ON ar.analysis_type_id = at.id
+				WHERE at.name = 'pii_extraction' AND ar.status = 'blocked'
+			`).Scan(&blocked)
+
+			result := Result{
+				OK:                 true,
+				TotalConversations: totalConvs,
+				Pending:            pending,
+				Running:            running,
+				Completed:          completed,
+				Failed:             failed,
+				Blocked:            blocked,
+			}
+
+			if jsonOutput {
+				printJSON(result)
+			} else {
+				fmt.Println("PII Extraction Status:")
+				fmt.Printf("  Total conversations: %d\n", totalConvs)
+				notStarted := totalConvs - pending - running - completed - failed - blocked
+				fmt.Printf("  Not started: %d\n", notStarted)
+				fmt.Printf("  Pending: %d\n", pending)
+				fmt.Printf("  Running: %d\n", running)
+				fmt.Printf("  Completed: %d\n", completed)
+				fmt.Printf("  Failed: %d\n", failed)
+				fmt.Printf("  Blocked: %d\n", blocked)
+			}
+		},
+	}
+
+	extractCmd.AddCommand(extractPIICmd)
+	extractCmd.AddCommand(extractSyncCmd)
+	extractCmd.AddCommand(extractStatusCmd)
+	rootCmd.AddCommand(extractCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
