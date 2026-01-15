@@ -408,37 +408,60 @@ func ProcessPIIExtractionOutput(db *sql.DB, runID, conversationID, outputJSON st
 
 		// Process new identity candidates (third parties)
 		for _, candidate := range output.NewIdentityCandidates {
-			personID := uuid.New().String()
-			name := candidate.Reference
-			if givenName, ok := candidate.KnownFacts["given_name"].(string); ok && givenName != "" {
-				name = givenName
+		name := candidate.Reference
+		if givenName, ok := candidate.KnownFacts["given_name"].(string); ok && givenName != "" {
+			name = givenName
+		}
+
+		cleanFacts := map[string]string{}
+		hasStrongIdentifier := false
+		for factKey, factValue := range candidate.KnownFacts {
+			strVal, ok := factValue.(string)
+			if !ok || strVal == "" {
+				continue
+			}
+			if isMetaKnownFactKey(factKey) {
+				continue
 			}
 
-			_, err := db.Exec(`
-				INSERT INTO persons (id, canonical_name, relationship_type, created_at, updated_at)
-				VALUES (?, ?, 'third_party', ?, ?)
-			`, personID, name, now, now)
-			if err == nil {
-				stats.ThirdPartiesCreated++
+			mapped := mapFactKey(factKey)
+			if isStrongThirdPartyIdentifier(mapped) {
+				hasStrongIdentifier = true
+			}
+			if isAllowedThirdPartyFactType(mapped) {
+				cleanFacts[mapped] = strVal
+			}
+		}
 
-				for factKey, factValue := range candidate.KnownFacts {
-					if strVal, ok := factValue.(string); ok && strVal != "" {
-						fact := PersonFact{
-							PersonID:           personID,
-							Category:           CategoryCoreIdentity,
-							FactType:           factKey,
-							FactValue:          strVal,
-							Confidence:         0.5,
-							SourceType:         "mentioned",
-							SourceConversation: &conversationID,
-						}
-						if channel != "" {
-							fact.SourceChannel = &channel
-						}
-						InsertFact(db, fact)
-					}
+		if !hasStrongIdentifier {
+			_ = insertCandidateMention(db, name, cleanFacts, conversationID, now)
+			continue
+		}
+
+		personID := uuid.New().String()
+		_, err := db.Exec(`
+			INSERT INTO persons (id, canonical_name, relationship_type, created_at, updated_at)
+			VALUES (?, ?, 'third_party', ?, ?)
+		`, personID, name, now, now)
+		if err == nil {
+			stats.ThirdPartiesCreated++
+
+			for factKey, factValue := range cleanFacts {
+				fact := PersonFact{
+					PersonID:           personID,
+					Category:           CategoryCoreIdentity,
+					FactType:           factKey,
+					FactValue:          factValue,
+					Confidence:         0.5,
+					SourceType:         "mentioned",
+					SourceConversation: &conversationID,
 				}
+				if channel != "" {
+					fact.SourceChannel = &channel
+				}
+				InsertFact(db, fact)
 			}
+		}
 		}
 
 		// Process unattributed facts
@@ -688,4 +711,69 @@ func mapCategory(category string) string {
 		return mapped
 	}
 	return category
+}
+
+func isMetaKnownFactKey(key string) bool {
+	k := strings.ToLower(strings.TrimSpace(key))
+	if k == "" {
+		return true
+	}
+	switch k {
+	case "evidence", "context", "confidence", "note", "description":
+		return true
+	}
+	if strings.HasPrefix(k, "relationship_to_") {
+		return true
+	}
+	return false
+}
+
+func isStrongThirdPartyIdentifier(factType string) bool {
+	switch factType {
+	case FactTypeEmailPersonal, FactTypeEmailWork, FactTypeEmailSchool,
+		FactTypePhoneMobile, FactTypePhoneHome, FactTypePhoneWork,
+		FactTypeSocialTwitter, FactTypeSocialInstagram, FactTypeSocialLinkedIn,
+		FactTypeSocialFacebook, FactTypeSocialTikTok, FactTypeSocialReddit,
+		FactTypeSocialDiscord, FactTypeUsernameGeneric,
+		FactTypeSSN, FactTypePassportNumber, FactTypeDriversLicense:
+		return true
+	}
+	return false
+}
+
+func isAllowedThirdPartyFactType(factType string) bool {
+	if isStrongThirdPartyIdentifier(factType) {
+		return true
+	}
+	switch factType {
+	case FactTypeFullLegalName, FactTypeGivenName, FactTypeFamilyName, "nickname":
+		return true
+	}
+	return false
+}
+
+func insertCandidateMention(db *sql.DB, reference string, knownFacts map[string]string, conversationID string, now int64) error {
+	if err := ensureCandidateMentionsTable(db); err != nil {
+		return err
+	}
+	factsJSON, _ := json.Marshal(knownFacts)
+	_, err := db.Exec(`
+		INSERT INTO candidate_mentions (
+			id, reference, known_facts_json, source_conversation_id, created_at
+		) VALUES (?, ?, ?, ?, ?)
+	`, uuid.New().String(), reference, string(factsJSON), conversationID, now)
+	return err
+}
+
+func ensureCandidateMentionsTable(db *sql.DB) error {
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS candidate_mentions (
+			id TEXT PRIMARY KEY,
+			reference TEXT NOT NULL,
+			known_facts_json TEXT,
+			source_conversation_id TEXT,
+			created_at INTEGER NOT NULL
+		)
+	`)
+	return err
 }

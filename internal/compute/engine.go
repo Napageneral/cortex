@@ -624,13 +624,21 @@ func (e *Engine) handleAnalysisJob(ctx context.Context, job *queue.Job) error {
 	// Build conversation text (check cache first for pre-encoded text)
 	t1 := time.Now()
 	var convText string
-	if cached, ok := e.getConversationTextCached(payload.ConversationID); ok {
-		convText = cached
-	} else {
+	if analysisTypeName == "pii_extraction" {
 		var err error
-		convText, err = e.buildConversationText(ctx, payload.ConversationID)
+		convText, err = e.buildConversationTextMasked(ctx, payload.ConversationID)
 		if err != nil {
-			return fmt.Errorf("build conversation text: %w", err)
+			return fmt.Errorf("build conversation text (masked): %w", err)
+		}
+	} else {
+		if cached, ok := e.getConversationTextCached(payload.ConversationID); ok {
+			convText = cached
+		} else {
+			var err error
+			convText, err = e.buildConversationText(ctx, payload.ConversationID)
+			if err != nil {
+				return fmt.Errorf("build conversation text: %w", err)
+			}
 		}
 	}
 	textBuildDur = time.Since(t1)
@@ -701,7 +709,7 @@ func (e *Engine) handleAnalysisJob(ctx context.Context, job *queue.Job) error {
 
 		// Add response schema for known analysis types (improves output reliability)
 		if schema := getResponseSchema(analysisTypeName); schema != nil {
-			req.GenerationConfig.ResponseSchema = schema
+			req.GenerationConfig.ResponseJsonSchema = schema
 		}
 	}
 
@@ -961,6 +969,101 @@ func (e *Engine) buildConversationText(ctx context.Context, convID string) (stri
 	return sb.String(), rows.Err()
 }
 
+// buildConversationTextMasked builds text for PII extraction with anonymized speaker labels.
+// Speaker labels are metadata only (User/ParticipantN) to avoid name leakage.
+func (e *Engine) buildConversationTextMasked(ctx context.Context, convID string) (string, error) {
+	rows, err := e.db.QueryContext(ctx, `
+		SELECT 
+			e.id,
+			e.content, 
+			e.timestamp, 
+			p.id,
+			p.is_me,
+			e.direction,
+			(
+				SELECT GROUP_CONCAT(
+					CASE 
+						WHEN a.media_type = 'image' THEN 'image'
+						WHEN a.media_type = 'video' THEN 'video'
+						WHEN a.media_type = 'audio' THEN 'audio'
+						WHEN a.media_type = 'sticker' THEN 'sticker'
+						ELSE COALESCE(a.filename, 'file')
+					END, '|'
+				)
+				FROM attachments a WHERE a.event_id = e.id
+			) as attachments
+		FROM conversation_events ce
+		JOIN events e ON ce.event_id = e.id
+		LEFT JOIN event_participants ep ON e.id = ep.event_id AND ep.role = 'sender'
+		LEFT JOIN persons p ON ep.person_id = p.id
+		WHERE ce.conversation_id = ?
+		ORDER BY ce.position
+	`, convID)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	var sb strings.Builder
+	labels := map[string]string{}
+	participantCount := 0
+
+	for rows.Next() {
+		var eventID string
+		var content sql.NullString
+		var timestamp int64
+		var senderID sql.NullString
+		var isMe sql.NullInt64
+		var direction string
+		var attachments sql.NullString
+
+		if err := rows.Scan(&eventID, &content, &timestamp, &senderID, &isMe, &direction, &attachments); err != nil {
+			return "", err
+		}
+
+		name := "Unknown"
+		if senderID.Valid && senderID.String != "" {
+			if isMe.Valid && isMe.Int64 == 1 {
+				name = "User"
+			} else if label, ok := labels[senderID.String]; ok {
+				name = label
+			} else {
+				participantCount++
+				label := fmt.Sprintf("Participant%d", participantCount)
+				labels[senderID.String] = label
+				name = label
+			}
+		}
+
+		var parts []string
+		if content.Valid && content.String != "" {
+			parts = append(parts, content.String)
+		}
+		if attachments.Valid && attachments.String != "" {
+			for _, att := range strings.Split(attachments.String, "|") {
+				switch att {
+				case "image":
+					parts = append(parts, "[Image]")
+				case "video":
+					parts = append(parts, "[Video]")
+				case "audio":
+					parts = append(parts, "[Audio]")
+				case "sticker":
+					parts = append(parts, "[Sticker]")
+				default:
+					parts = append(parts, fmt.Sprintf("[Attachment: %s]", att))
+				}
+			}
+		}
+
+		if len(parts) > 0 {
+			sb.WriteString(fmt.Sprintf("%s: %s\n", name, strings.Join(parts, " ")))
+		}
+	}
+
+	return sb.String(), rows.Err()
+}
+
 // buildFacetText builds text representation of a facet for embedding
 // Format: "facet_type: value" (e.g., "entity: Paris", "topic: travel")
 func (e *Engine) buildFacetText(ctx context.Context, facetID string) (string, error) {
@@ -1030,14 +1133,14 @@ func (e *Engine) buildPersonText(ctx context.Context, personID string) (string, 
 
 // extractAndPersistFacets parses structured output and saves facets
 func (e *Engine) extractAndPersistFacets(ctx context.Context, runID, convID, outputText, facetsConfig string) error {
-	// Parse the JSON output
-	jsonText := extractJSONObject(outputText)
+	// Parse the JSON output (object or array)
+	jsonText := extractJSON(outputText)
 	if jsonText == "" {
-		return fmt.Errorf("no JSON object found")
+		return fmt.Errorf("no JSON payload found")
 	}
 
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(jsonText), &parsed); err != nil {
+	var raw any
+	if err := json.Unmarshal([]byte(jsonText), &raw); err != nil {
 		return fmt.Errorf("parse JSON: %w", err)
 	}
 
@@ -1054,6 +1157,23 @@ func (e *Engine) extractAndPersistFacets(ctx context.Context, runID, convID, out
 
 	now := time.Now().Unix()
 
+	var payloads []map[string]any
+	switch v := raw.(type) {
+	case map[string]any:
+		payloads = append(payloads, v)
+	case []any:
+		for _, item := range v {
+			if m, ok := item.(map[string]any); ok {
+				payloads = append(payloads, m)
+			}
+		}
+	default:
+		return nil
+	}
+	if len(payloads) == 0 {
+		return nil
+	}
+
 	// Collect all facets to insert
 	type facetRow struct {
 		id        string
@@ -1063,13 +1183,15 @@ func (e *Engine) extractAndPersistFacets(ctx context.Context, runID, convID, out
 	var facets []facetRow
 
 	for _, mapping := range config.Mappings {
-		values := extractValues(parsed, mapping.JsonPath)
-		for _, val := range values {
-			facets = append(facets, facetRow{
-				id:        uuid.New().String(),
-				facetType: mapping.FacetType,
-				value:     val,
-			})
+		for _, payload := range payloads {
+			values := extractValues(payload, mapping.JsonPath)
+			for _, val := range values {
+				facets = append(facets, facetRow{
+					id:        uuid.New().String(),
+					facetType: mapping.FacetType,
+					value:     val,
+				})
+			}
 		}
 	}
 
@@ -1121,20 +1243,44 @@ func extractText(resp *gemini.GenerateContentResponse) string {
 	return ""
 }
 
-func extractJSONObject(text string) string {
+func extractJSON(text string) string {
 	s := strings.TrimSpace(text)
 	if strings.HasPrefix(s, "```") {
-		s = strings.TrimPrefix(s, "```json")
-		s = strings.TrimPrefix(s, "```")
-		s = strings.TrimSuffix(s, "```")
+		if idx := strings.Index(s, "\n"); idx != -1 {
+			s = s[idx+1:]
+		} else {
+			return ""
+		}
+		if end := strings.LastIndex(s, "```"); end != -1 {
+			s = s[:end]
+		}
 		s = strings.TrimSpace(s)
 	}
+
+	if strings.HasPrefix(s, "[") {
+		if end := strings.LastIndexByte(s, ']'); end > 0 {
+			return s[:end+1]
+		}
+	}
+	if strings.HasPrefix(s, "{") {
+		if end := strings.LastIndexByte(s, '}'); end > 0 {
+			return s[:end+1]
+		}
+	}
+
 	start := strings.IndexByte(s, '{')
 	end := strings.LastIndexByte(s, '}')
-	if start == -1 || end == -1 || end <= start {
-		return ""
+	if start != -1 && end > start {
+		return s[start : end+1]
 	}
-	return s[start : end+1]
+
+	start = strings.IndexByte(s, '[')
+	end = strings.LastIndexByte(s, ']')
+	if start != -1 && end > start {
+		return s[start : end+1]
+	}
+
+	return ""
 }
 
 // extractValues extracts values from a JSON path like "entities[].name"
@@ -1198,37 +1344,122 @@ func getResponseSchema(analysisTypeName string) any {
 	case "convo-all-v1":
 		// Schema for conversation analysis: summary, entities, topics, emotions, humor
 		return map[string]any{
-			"type": "OBJECT",
+			"type": "object",
 			"properties": map[string]any{
 				"summary": map[string]any{
-					"type": "STRING",
+					"type": "string",
 				},
 				"entities": map[string]any{
-					"type": "ARRAY",
+					"type": "array",
 					"items": map[string]any{
-						"type": "STRING",
+						"type": "string",
 					},
 				},
 				"topics": map[string]any{
-					"type": "ARRAY",
+					"type": "array",
 					"items": map[string]any{
-						"type": "STRING",
+						"type": "string",
 					},
 				},
 				"emotions": map[string]any{
-					"type": "ARRAY",
+					"type": "array",
 					"items": map[string]any{
-						"type": "STRING",
+						"type": "string",
 					},
 				},
 				"humor": map[string]any{
-					"type": "ARRAY",
+					"type": "array",
 					"items": map[string]any{
-						"type": "STRING",
+						"type": "string",
 					},
 				},
 			},
 			"required": []string{"summary", "entities", "topics", "emotions", "humor"},
+		}
+	case "pii_extraction":
+		// JSON schema for PII extraction (use responseJsonSchema)
+		return map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"extraction_metadata": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"channel": map[string]any{"type": "string"},
+						"primary_contact_name": map[string]any{"type": "string"},
+						"primary_contact_identifier": map[string]any{"type": "string"},
+						"user_name": map[string]any{"type": "string"},
+						"message_count": map[string]any{"type": "integer"},
+						"date_range": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"start": map[string]any{"type": "string"},
+								"end": map[string]any{"type": "string"},
+							},
+						},
+					},
+					"additionalProperties": true,
+				},
+				"persons": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"reference": map[string]any{"type": "string"},
+							"is_primary_contact": map[string]any{"type": "boolean"},
+							"confidence_is_primary": map[string]any{"type": "number"},
+							"pii": map[string]any{
+								"type":                 "object",
+								"additionalProperties": true,
+							},
+							"sensitive_flags": map[string]any{
+								"type": "array",
+								"items": map[string]any{
+									"type":                 "object",
+									"additionalProperties": true,
+								},
+							},
+						},
+						"required":             []string{"reference", "pii"},
+						"additionalProperties": true,
+					},
+				},
+				"new_identity_candidates": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"reference": map[string]any{"type": "string"},
+							"known_facts": map[string]any{
+								"type":                 "object",
+								"additionalProperties": true,
+							},
+							"note": map[string]any{"type": "string"},
+						},
+						"required":             []string{"reference"},
+						"additionalProperties": true,
+					},
+				},
+				"unattributed_facts": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"fact_type": map[string]any{"type": "string"},
+							"fact_value": map[string]any{"type": "string"},
+							"shared_by": map[string]any{"type": "string"},
+							"context": map[string]any{"type": "string"},
+							"possible_attributions": map[string]any{
+								"type": "array",
+								"items": map[string]any{"type": "string"},
+							},
+							"note": map[string]any{"type": "string"},
+						},
+						"required":             []string{"fact_type", "fact_value"},
+						"additionalProperties": true,
+					},
+				},
+			},
+			"required": []string{"persons"},
 		}
 	default:
 		return nil

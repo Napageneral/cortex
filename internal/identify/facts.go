@@ -3,6 +3,7 @@ package identify
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -91,6 +92,28 @@ var HardIdentifiers = []string{
 	FactTypePhoneHome,
 	FactTypePhoneWork,
 	FactTypeFullLegalName,
+	FactTypeSocialTwitter,
+	FactTypeSocialInstagram,
+	FactTypeSocialLinkedIn,
+	FactTypeSocialFacebook,
+	FactTypeSocialTikTok,
+	FactTypeSocialReddit,
+	FactTypeSocialDiscord,
+	FactTypeUsernameGeneric,
+	FactTypeSSN,
+	FactTypePassportNumber,
+	FactTypeDriversLicense,
+}
+
+// Tier1Identifiers are strong identifiers for high-precision matching.
+// These explicitly exclude full_legal_name to avoid label leakage.
+var Tier1Identifiers = []string{
+	FactTypeEmailPersonal,
+	FactTypeEmailWork,
+	FactTypeEmailSchool,
+	FactTypePhoneMobile,
+	FactTypePhoneHome,
+	FactTypePhoneWork,
 	FactTypeSocialTwitter,
 	FactTypeSocialInstagram,
 	FactTypeSocialLinkedIn,
@@ -369,6 +392,71 @@ func FindAllHardIdentifierCollisions(db *sql.DB) ([]FactCollision, error) {
 			return nil, fmt.Errorf("failed to scan collision: %w", err)
 		}
 
+		collision.PersonIDs = splitPersonIDs(personIDsStr)
+		collisions = append(collisions, collision)
+	}
+
+	return collisions, rows.Err()
+}
+
+// FindTier1IdentifierCollisions finds collisions across Tier 1 identifiers only.
+// Uses a normalized value to dedupe trivial variants before matching.
+func FindTier1IdentifierCollisions(db *sql.DB) ([]FactCollision, error) {
+	placeholders := strings.Repeat("?,", len(Tier1Identifiers))
+	placeholders = strings.TrimSuffix(placeholders, ",")
+
+	normalizedExpr := `
+		CASE
+			WHEN fact_type IN ('phone_mobile','phone_home','phone_work') THEN
+				LOWER(TRIM(
+					REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(fact_value, '-', ''), ' ', ''), '(', ''), ')', ''), '+', ''), '.', '')
+				))
+			WHEN fact_type IN ('social_twitter','social_instagram','social_linkedin','social_facebook','social_tiktok','social_reddit','social_discord','username_generic') THEN
+				LOWER(TRIM(REPLACE(fact_value, '@', '')))
+			ELSE
+				LOWER(TRIM(fact_value))
+		END
+	`
+
+	query := fmt.Sprintf(`
+		SELECT
+			fact_type,
+			%s AS fact_value,
+			GROUP_CONCAT(person_id) as person_ids,
+			AVG(confidence) as avg_confidence,
+			COUNT(DISTINCT person_id) as person_count
+		FROM person_facts
+		WHERE fact_type IN (%s)
+		GROUP BY fact_type, fact_value
+		HAVING person_count > 1
+		ORDER BY person_count DESC, avg_confidence DESC
+	`, normalizedExpr, placeholders)
+
+	args := make([]interface{}, 0, len(Tier1Identifiers))
+	for _, v := range Tier1Identifiers {
+		args = append(args, v)
+	}
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query tier1 collisions: %w", err)
+	}
+	defer rows.Close()
+
+	var collisions []FactCollision
+	for rows.Next() {
+		var collision FactCollision
+		var personIDsStr string
+		var personCount int
+		if err := rows.Scan(
+			&collision.FactType,
+			&collision.FactValue,
+			&personIDsStr,
+			&collision.Confidence,
+			&personCount,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan collision: %w", err)
+		}
 		collision.PersonIDs = splitPersonIDs(personIDsStr)
 		collisions = append(collisions, collision)
 	}

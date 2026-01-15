@@ -46,6 +46,10 @@ func DetectHardIDCollisions(db *sql.DB) ([]FactCollision, error) {
 	return FindAllHardIdentifierCollisions(db)
 }
 
+// DetectTier1IDCollisions finds collisions for Tier 1 identifiers only
+func DetectTier1IDCollisions(db *sql.DB) ([]FactCollision, error) {
+	return FindTier1IdentifierCollisions(db)
+}
 // DetectHardIDCollisionsByType finds collisions for a specific hard identifier type
 func DetectHardIDCollisionsByType(db *sql.DB, factType string) ([]FactCollision, error) {
 	return FindFactCollisions(db, factType)
@@ -218,7 +222,7 @@ func ScoreSoftIdentifiers(db *sql.DB) ([]SoftIdentifierScore, error) {
 }
 
 // GenerateMergeSuggestions creates merge_events from collision detection results
-func GenerateMergeSuggestions(db *sql.DB, includeSoft bool) (*ResolutionResult, error) {
+func GenerateMergeSuggestions(db *sql.DB, includeSoft bool, tier1Only bool) (*ResolutionResult, error) {
 	result := &ResolutionResult{}
 	now := time.Now().Unix()
 
@@ -243,9 +247,14 @@ func GenerateMergeSuggestions(db *sql.DB, includeSoft bool) (*ResolutionResult, 
 		rows.Close()
 	}
 
-	// Phase 1: Hard identifier collisions
+	// Phase 1: Tier 1 (or hard) identifier collisions
 	const maxHardGroupSize = 50
-	hardCollisions, err := DetectHardIDCollisions(db)
+	var hardCollisions []FactCollision
+	if tier1Only {
+		hardCollisions, err = DetectTier1IDCollisions(db)
+	} else {
+		hardCollisions, err = DetectHardIDCollisions(db)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("detect hard collisions: %w", err)
 	}
@@ -289,38 +298,40 @@ func GenerateMergeSuggestions(db *sql.DB, includeSoft bool) (*ResolutionResult, 
 		}
 	}
 
-	// Phase 2: Compound matches
-	compoundMatches, err := DetectCompoundMatches(db)
-	if err != nil {
-		return nil, fmt.Errorf("detect compound matches: %w", err)
+	// Phase 2: Compound matches (Tier 2)
+	if !tier1Only {
+		compoundMatches, err := DetectCompoundMatches(db)
+		if err != nil {
+			return nil, fmt.Errorf("detect compound matches: %w", err)
+		}
+
+		for _, match := range compoundMatches {
+			result.CompoundMatches++
+			p1, p2 := match.Person1ID, match.Person2ID
+			if p1 > p2 {
+				p1, p2 = p2, p1
+			}
+
+			if _, ok := existing[pairKey{p1, p2}]; ok {
+				continue
+			}
+
+			factsJSON, _ := json.Marshal(match.MatchingFacts)
+
+			_, err := db.Exec(`
+				INSERT INTO merge_events (id, source_person_id, target_person_id, merge_type,
+					triggering_facts, similarity_score, status, auto_eligible, created_at)
+				VALUES (?, ?, ?, 'compound', ?, ?, 'pending', 1, ?)
+			`, uuid.New().String(), p1, p2, string(factsJSON), match.Confidence, now)
+			if err == nil {
+				result.MergeSuggestionsCreated++
+				existing[pairKey{p1, p2}] = struct{}{}
+			}
+		}
 	}
 
-	for _, match := range compoundMatches {
-		result.CompoundMatches++
-		p1, p2 := match.Person1ID, match.Person2ID
-		if p1 > p2 {
-			p1, p2 = p2, p1
-		}
-
-		if _, ok := existing[pairKey{p1, p2}]; ok {
-			continue
-		}
-
-		factsJSON, _ := json.Marshal(match.MatchingFacts)
-
-		_, err := db.Exec(`
-			INSERT INTO merge_events (id, source_person_id, target_person_id, merge_type,
-				triggering_facts, similarity_score, status, auto_eligible, created_at)
-			VALUES (?, ?, ?, 'compound', ?, ?, 'pending', 1, ?)
-		`, uuid.New().String(), p1, p2, string(factsJSON), match.Confidence, now)
-		if err == nil {
-			result.MergeSuggestionsCreated++
-			existing[pairKey{p1, p2}] = struct{}{}
-		}
-	}
-
-	// Phase 3: Soft identifier accumulation
-	if includeSoft {
+	// Phase 3: Soft identifier accumulation (Tier 2)
+	if includeSoft && !tier1Only {
 		softScores, err := ScoreSoftIdentifiers(db)
 		if err != nil {
 			return nil, fmt.Errorf("score soft identifiers: %w", err)
@@ -511,9 +522,9 @@ func hasConflictingFacts(db *sql.DB, person1ID, person2ID string) (bool, error) 
 }
 
 // RunFullResolution runs the complete identity resolution pipeline
-func RunFullResolution(db *sql.DB, autoMerge bool, includeSoft bool) (*ResolutionResult, error) {
+func RunFullResolution(db *sql.DB, autoMerge bool, includeSoft bool, tier1Only bool) (*ResolutionResult, error) {
 	// Generate all merge suggestions
-	result, err := GenerateMergeSuggestions(db, includeSoft)
+	result, err := GenerateMergeSuggestions(db, includeSoft, tier1Only)
 	if err != nil {
 		return nil, err
 	}

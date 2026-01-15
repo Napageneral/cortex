@@ -2510,6 +2510,7 @@ queryable event store with identity resolution.`,
 	var resolveAutoMerge bool
 	var resolveDryRun bool
 	var resolveSkipSoft bool
+	var resolveTier1Only bool
 	identifyResolveCmd := &cobra.Command{
 		Use:   "resolve",
 		Short: "Run identity resolution to find and merge matching persons",
@@ -2544,11 +2545,18 @@ The algorithm runs in three phases:
 			defer database.Close()
 
 			includeSoft := !resolveSkipSoft
+			tier1Only := resolveTier1Only
 
 			if resolveDryRun {
 				// Just show what would happen
-				hardCollisions, _ := identify.DetectHardIDCollisions(database)
-				compoundMatches, _ := identify.DetectCompoundMatches(database)
+				var hardCollisions []identify.FactCollision
+				var compoundMatches []identify.CompoundMatch
+				if tier1Only {
+					hardCollisions, _ = identify.DetectTier1IDCollisions(database)
+				} else {
+					hardCollisions, _ = identify.DetectHardIDCollisions(database)
+					compoundMatches, _ = identify.DetectCompoundMatches(database)
+				}
 
 				result := Result{
 					OK:              true,
@@ -2556,7 +2564,7 @@ The algorithm runs in three phases:
 					CompoundMatches: len(compoundMatches),
 					Message:         "Dry run - no changes made",
 				}
-				if includeSoft {
+				if includeSoft && !tier1Only {
 					softScores, _ := identify.ScoreSoftIdentifiers(database)
 					for _, s := range softScores {
 						if s.Score >= 0.6 {
@@ -2576,7 +2584,7 @@ The algorithm runs in three phases:
 				return
 			}
 
-			res, err := identify.RunFullResolution(database, resolveAutoMerge, includeSoft)
+			res, err := identify.RunFullResolution(database, resolveAutoMerge, includeSoft, tier1Only)
 			if err != nil {
 				result := Result{OK: false, Message: fmt.Sprintf("Failed to run resolution: %v", err)}
 				if jsonOutput {
@@ -2615,6 +2623,7 @@ The algorithm runs in three phases:
 	identifyResolveCmd.Flags().BoolVar(&resolveAutoMerge, "auto", false, "Automatically execute high-confidence merges")
 	identifyResolveCmd.Flags().BoolVar(&resolveDryRun, "dry-run", false, "Show what would be detected without making changes")
 	identifyResolveCmd.Flags().BoolVar(&resolveSkipSoft, "skip-soft", false, "Skip soft identifier accumulation (faster)")
+	identifyResolveCmd.Flags().BoolVar(&resolveTier1Only, "tier1-only", true, "Use Tier 1 identifiers only (skip compound/soft)")
 
 	// identify merges - list pending merge events
 	var mergesStatus string
@@ -5534,6 +5543,7 @@ Examples:
 	var extractPerson string
 	var extractDryRun bool
 	var extractLimit int
+	var extractDefinition string
 
 	extractPIICmd := &cobra.Command{
 		Use:   "pii",
@@ -5576,6 +5586,24 @@ Examples:
 				)
 			`
 			var queryArgs []interface{}
+			var defID string
+			var hasDefinition bool
+
+			if extractDefinition != "" {
+				err := database.QueryRow(`SELECT id FROM conversation_definitions WHERE name = ?`, extractDefinition).Scan(&defID)
+				if err != nil {
+					result := Result{OK: false, Message: fmt.Sprintf("Definition '%s' not found", extractDefinition)}
+					if jsonOutput {
+						printJSON(result)
+					} else {
+						fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+					}
+					os.Exit(1)
+				}
+				hasDefinition = true
+				querySQL += ` AND c.definition_id = ?`
+				queryArgs = append(queryArgs, defID)
+			}
 
 			if extractChannel != "" {
 				querySQL += ` AND c.channel = ?`
@@ -5609,6 +5637,10 @@ Examples:
 			if extractConversation != "" {
 				querySQL = `SELECT c.id FROM conversations c WHERE c.id = ?`
 				queryArgs = []interface{}{extractConversation}
+				if hasDefinition {
+					querySQL += ` AND c.definition_id = ?`
+					queryArgs = append(queryArgs, defID)
+				}
 			}
 
 			if extractPerson != "" {
@@ -5626,6 +5658,10 @@ Examples:
 					)
 				`
 				queryArgs = []interface{}{"%" + extractPerson + "%", "%" + extractPerson + "%"}
+				if hasDefinition {
+					querySQL += ` AND c.definition_id = ?`
+					queryArgs = append(queryArgs, defID)
+				}
 			}
 
 			querySQL += ` ORDER BY c.start_time DESC`
@@ -5721,6 +5757,7 @@ Examples:
 	extractPIICmd.Flags().StringVar(&extractPerson, "person", "", "Process conversations involving specific person")
 	extractPIICmd.Flags().BoolVar(&extractDryRun, "dry-run", false, "Show what would be processed without enqueueing")
 	extractPIICmd.Flags().IntVar(&extractLimit, "limit", 0, "Limit number of conversations to process")
+	extractPIICmd.Flags().StringVar(&extractDefinition, "definition", "", "Filter by conversation definition name")
 
 	// extract sync - sync facets to person_facts
 	extractSyncCmd := &cobra.Command{

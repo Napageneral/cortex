@@ -279,6 +279,18 @@ CREATE INDEX IF NOT EXISTS idx_unattributed_value ON unattributed_facts(fact_typ
 CREATE INDEX IF NOT EXISTS idx_unattributed_unresolved ON unattributed_facts(resolved_to_person_id)
     WHERE resolved_to_person_id IS NULL;
 
+-- Candidate mentions: Third-party references without strong identifiers
+CREATE TABLE IF NOT EXISTS candidate_mentions (
+    id TEXT PRIMARY KEY,
+    reference TEXT NOT NULL,
+    known_facts_json TEXT,                -- JSON map of extracted facts
+    source_conversation_id TEXT REFERENCES conversations(id),
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_candidate_mentions_reference ON candidate_mentions(reference);
+CREATE INDEX IF NOT EXISTS idx_candidate_mentions_conversation ON candidate_mentions(source_conversation_id);
+
 -- Merge events: Proposed and executed identity merges
 -- Tracks both pending suggestions and completed merges with full audit trail
 CREATE TABLE IF NOT EXISTS merge_events (

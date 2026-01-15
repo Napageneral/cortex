@@ -18,6 +18,13 @@ Extract ALL PII for EVERY person mentioned in this conversation:
 2. **The user themselves** - any PII about the user mentioned in the conversation
 3. **Third parties** - any other people mentioned (family, friends, colleagues, etc.)
 
+### Critical Guardrails
+- Speaker labels (e.g., "Casey Adams:") are metadata for attribution only.
+- Speaker labels may be generic (e.g., "User", "Participant1") and are not names.
+- Do NOT use speaker labels or contact names as evidence for any name fields.
+- Only extract `full_legal_name`, `given_name`, `family_name`, or `nicknames` when the
+  name appears explicitly in message content (not in the speaker label).
+
 For each piece of information:
 - Quote the exact evidence from the messages
 - Indicate confidence level (high/medium/low)
@@ -327,7 +334,6 @@ Extract any of the following categories if present:
             "confidence": "high",
             "evidence": ["labeled as Dad in contacts", "refers to self as Jim"]
           }
-          // ... more fields
         },
         "contact_information": {
           "email_work": {
@@ -342,7 +348,6 @@ Extract any of the following categories if present:
             "evidence": ["LastPass has all my passwords. Napageneral@gmail.com"],
             "self_disclosed": true
           }
-          // ... more fields
         },
         "relationships": {
           "spouse": {
@@ -394,7 +399,6 @@ Extract any of the following categories if present:
             "self_disclosed": true
           }
         }
-        // ... all other categories
       },
       "sensitive_flags": [
         {
@@ -474,3 +478,8 @@ Extract any of the following categories if present:
    - **medium**: Strongly implied or partially stated
    - **low**: Inferred or uncertain
 10. **Don't hallucinate** - Only extract what's actually in the messages
+
+---
+
+## Conversation
+{{{conversation_text}}}
