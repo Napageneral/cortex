@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Napageneral/comms/internal/db"
+	"github.com/Napageneral/cortex/internal/db"
 )
 
 func TestImportMBox_Basic(t *testing.T) {

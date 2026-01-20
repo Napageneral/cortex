@@ -4,24 +4,55 @@ CREATE TABLE IF NOT EXISTS schema_version (
     applied_at INTEGER NOT NULL
 );
 
--- Events: All communication events across channels
+-- Events: All communication + document events across channels
 CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY,
     timestamp INTEGER NOT NULL,
     channel TEXT NOT NULL,
     content_types TEXT NOT NULL,  -- JSON array: ["text"], ["text", "image"]
     content TEXT,
-    direction TEXT NOT NULL,      -- sent, received, observed
+    direction TEXT NOT NULL,      -- sent, received, observed, created, updated, deleted
     thread_id TEXT,
     reply_to TEXT,
     source_adapter TEXT NOT NULL,
     source_id TEXT NOT NULL,
+    metadata_json TEXT,           -- Optional structured metadata (AIX tool calls, files, etc.)
     UNIQUE(source_adapter, source_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_events_channel ON events(channel);
 CREATE INDEX IF NOT EXISTS idx_events_thread ON events(thread_id);
+
+-- Document heads: Stable pointers for document-style events (skills, docs, memory, tools)
+CREATE TABLE IF NOT EXISTS document_heads (
+    doc_key TEXT PRIMARY KEY,           -- stable id (ex: "skill:gog")
+    channel TEXT NOT NULL,              -- "skill", "doc", "memory", "tool"
+    current_event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    content_hash TEXT NOT NULL,
+    title TEXT,
+    description TEXT,
+    metadata_json TEXT,
+    updated_at INTEGER NOT NULL,
+    retrieval_count INTEGER NOT NULL DEFAULT 0,
+    last_retrieved_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_heads_channel ON document_heads(channel);
+CREATE INDEX IF NOT EXISTS idx_document_heads_event ON document_heads(current_event_id);
+
+-- Retrieval log: Optional per-query document retrieval tracking
+CREATE TABLE IF NOT EXISTS retrieval_log (
+    id TEXT PRIMARY KEY,
+    doc_key TEXT NOT NULL REFERENCES document_heads(doc_key) ON DELETE CASCADE,
+    event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    query_text TEXT,
+    score REAL,
+    retrieved_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_retrieval_log_doc ON retrieval_log(doc_key);
+CREATE INDEX IF NOT EXISTS idx_retrieval_log_ts ON retrieval_log(retrieved_at);
 
 -- Persons: People with unified identity
 CREATE TABLE IF NOT EXISTS persons (
@@ -174,14 +205,14 @@ CREATE TABLE IF NOT EXISTS bus_events (
     id TEXT NOT NULL UNIQUE,
     type TEXT NOT NULL,
     adapter TEXT,
-    comms_event_id TEXT,
+    cortex_event_id TEXT,
     created_at INTEGER NOT NULL,
     payload_json TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_bus_events_created_at ON bus_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_bus_events_type ON bus_events(type);
-CREATE INDEX IF NOT EXISTS idx_bus_events_event ON bus_events(comms_event_id);
+CREATE INDEX IF NOT EXISTS idx_bus_events_event ON bus_events(cortex_event_id);
 
 -- Sync jobs: Track background/resumable sync progress per adapter
 CREATE TABLE IF NOT EXISTS sync_jobs (
@@ -218,7 +249,7 @@ CREATE INDEX IF NOT EXISTS idx_merge_suggestions_confidence ON merge_suggestions
 CREATE INDEX IF NOT EXISTS idx_merge_suggestions_person1 ON merge_suggestions(person1_id);
 CREATE INDEX IF NOT EXISTS idx_merge_suggestions_person2 ON merge_suggestions(person2_id);
 
--- Person facts: Rich identity graph data extracted from conversations
+-- Person facts: Rich identity graph data extracted from segments
 -- Stores all PII and enrichment data with attribution and confidence
 CREATE TABLE IF NOT EXISTS person_facts (
     id TEXT PRIMARY KEY,
@@ -233,7 +264,7 @@ CREATE TABLE IF NOT EXISTS person_facts (
     confidence REAL DEFAULT 0.5,    -- 0.0-1.0
     source_type TEXT NOT NULL,      -- 'self_disclosed', 'mentioned', 'inferred', 'signature'
     source_channel TEXT,            -- 'imessage', 'gmail', etc.
-    source_conversation_id TEXT,    -- conversation where extracted
+    source_segment_id TEXT,    -- segment where extracted
     source_facet_id TEXT,           -- link to facets table
     evidence TEXT,                  -- quote from message
 
@@ -255,7 +286,7 @@ CREATE INDEX IF NOT EXISTS idx_person_facts_value ON person_facts(fact_value);
 CREATE INDEX IF NOT EXISTS idx_person_facts_hard_id ON person_facts(fact_type, fact_value)
     WHERE is_hard_identifier = 1;
 
--- Unattributed facts: Facts extracted from conversations that couldn't be attributed to a specific person
+-- Unattributed facts: Facts extracted from segments that couldn't be attributed to a specific person
 -- For example: phone numbers shared without context about whose number it is
 CREATE TABLE IF NOT EXISTS unattributed_facts (
     id TEXT PRIMARY KEY,
@@ -264,7 +295,7 @@ CREATE TABLE IF NOT EXISTS unattributed_facts (
 
     shared_by_person_id TEXT REFERENCES persons(id),
     source_event_id TEXT REFERENCES events(id),
-    source_conversation_id TEXT REFERENCES conversations(id),
+    source_segment_id TEXT REFERENCES segments(id),
     context TEXT,
     possible_attributions TEXT,     -- JSON array of guesses
 
@@ -284,12 +315,12 @@ CREATE TABLE IF NOT EXISTS candidate_mentions (
     id TEXT PRIMARY KEY,
     reference TEXT NOT NULL,
     known_facts_json TEXT,                -- JSON map of extracted facts
-    source_conversation_id TEXT REFERENCES conversations(id),
+    source_segment_id TEXT REFERENCES segments(id),
     created_at INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_candidate_mentions_reference ON candidate_mentions(reference);
-CREATE INDEX IF NOT EXISTS idx_candidate_mentions_conversation ON candidate_mentions(source_conversation_id);
+CREATE INDEX IF NOT EXISTS idx_candidate_mentions_segment ON candidate_mentions(source_segment_id);
 
 -- Merge events: Proposed and executed identity merges
 -- Tracks both pending suggestions and completed merges with full audit trail
@@ -313,8 +344,8 @@ CREATE TABLE IF NOT EXISTS merge_events (
 CREATE INDEX IF NOT EXISTS idx_merge_events_status ON merge_events(status);
 CREATE INDEX IF NOT EXISTS idx_merge_events_persons ON merge_events(source_person_id, target_person_id);
 
--- Conversation definitions: HOW to chunk events into conversations
-CREATE TABLE IF NOT EXISTS conversation_definitions (
+-- Segment definitions: HOW to chunk events into segments
+CREATE TABLE IF NOT EXISTS segment_definitions (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,             -- "imessage_90min", "gmail_thread", "cross_channel_persona"
 
@@ -322,7 +353,7 @@ CREATE TABLE IF NOT EXISTS conversation_definitions (
     channel TEXT,                          -- NULL = all channels, or specific channel
 
     -- Strategy
-    strategy TEXT NOT NULL,                -- "time_gap", "thread", "session", "daily", "persona_pair", "custom"
+    strategy TEXT NOT NULL,                -- "time_gap", "thread", "single_event", "turn_pair", "session", "daily", "persona_pair", "custom"
     config_json TEXT NOT NULL,             -- Strategy-specific config
 
     description TEXT,
@@ -330,13 +361,13 @@ CREATE TABLE IF NOT EXISTS conversation_definitions (
     updated_at INTEGER NOT NULL
 );
 
--- Conversations: instances produced by applying a definition
-CREATE TABLE IF NOT EXISTS conversations (
+-- Segments: instances produced by applying a definition
+CREATE TABLE IF NOT EXISTS segments (
     id TEXT PRIMARY KEY,
-    definition_id TEXT NOT NULL REFERENCES conversation_definitions(id),
+    definition_id TEXT NOT NULL REFERENCES segment_definitions(id),
 
     -- Scope info (denormalized for queries)
-    -- These can be NULL for cross-channel/cross-thread conversations
+    -- These can be NULL for cross-channel/cross-thread segments
     channel TEXT,                          -- NULL if spans multiple channels
     thread_id TEXT REFERENCES threads(id), -- NULL if spans multiple threads
 
@@ -354,20 +385,20 @@ CREATE TABLE IF NOT EXISTS conversations (
     created_at INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_conversations_definition ON conversations(definition_id);
-CREATE INDEX IF NOT EXISTS idx_conversations_channel ON conversations(channel);
-CREATE INDEX IF NOT EXISTS idx_conversations_thread ON conversations(thread_id);
-CREATE INDEX IF NOT EXISTS idx_conversations_time ON conversations(start_time, end_time);
+CREATE INDEX IF NOT EXISTS idx_segments_definition ON segments(definition_id);
+CREATE INDEX IF NOT EXISTS idx_segments_channel ON segments(channel);
+CREATE INDEX IF NOT EXISTS idx_segments_thread ON segments(thread_id);
+CREATE INDEX IF NOT EXISTS idx_segments_time ON segments(start_time, end_time);
 
--- Conversation events: which events belong to which conversation
-CREATE TABLE IF NOT EXISTS conversation_events (
-    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+-- Segment events: which events belong to which segment
+CREATE TABLE IF NOT EXISTS segment_events (
+    segment_id TEXT NOT NULL REFERENCES segments(id) ON DELETE CASCADE,
     event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-    position INTEGER NOT NULL,             -- order within conversation (1-indexed)
-    PRIMARY KEY (conversation_id, event_id)
+    position INTEGER NOT NULL,             -- order within segment (1-indexed)
+    PRIMARY KEY (segment_id, event_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_conversation_events_event ON conversation_events(event_id);
+CREATE INDEX IF NOT EXISTS idx_segment_events_event ON segment_events(event_id);
 
 -- Analysis types: defines what kind of analysis this is
 CREATE TABLE IF NOT EXISTS analysis_types (
@@ -384,18 +415,18 @@ CREATE TABLE IF NOT EXISTS analysis_types (
     facets_config_json TEXT,             -- Extraction rules
 
     -- Prompt (assuming all analyses are LLM-based)
-    prompt_template TEXT NOT NULL,       -- The prompt template with {conversation_text} placeholder
+    prompt_template TEXT NOT NULL,       -- The prompt template with {segment_text} placeholder
     model TEXT,                          -- "gemini-2.0-flash-thinking", etc.
 
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
 
--- Analysis runs: one per (analysis_type, conversation) pair
+-- Analysis runs: one per (analysis_type, segment) pair
 CREATE TABLE IF NOT EXISTS analysis_runs (
     id TEXT PRIMARY KEY,
     analysis_type_id TEXT NOT NULL REFERENCES analysis_types(id),
-    conversation_id TEXT NOT NULL REFERENCES conversations(id),
+    segment_id TEXT NOT NULL REFERENCES segments(id),
 
     status TEXT NOT NULL,                -- "pending", "running", "completed", "failed", "blocked"
 
@@ -413,18 +444,18 @@ CREATE TABLE IF NOT EXISTS analysis_runs (
 
     created_at INTEGER NOT NULL,
 
-    UNIQUE(analysis_type_id, conversation_id)
+    UNIQUE(analysis_type_id, segment_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_analysis_runs_type ON analysis_runs(analysis_type_id);
-CREATE INDEX IF NOT EXISTS idx_analysis_runs_conversation ON analysis_runs(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_analysis_runs_segment ON analysis_runs(segment_id);
 CREATE INDEX IF NOT EXISTS idx_analysis_runs_status ON analysis_runs(status);
 
 -- Facets: extracted queryable values from structured analyses
 CREATE TABLE IF NOT EXISTS facets (
     id TEXT PRIMARY KEY,
     analysis_run_id TEXT NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
-    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    segment_id TEXT NOT NULL REFERENCES segments(id) ON DELETE CASCADE,
 
     -- What kind of facet
     facet_type TEXT NOT NULL,            -- "entity", "topic", "emotion", "pii_email", "summary", etc.
@@ -443,7 +474,7 @@ CREATE TABLE IF NOT EXISTS facets (
 );
 
 CREATE INDEX IF NOT EXISTS idx_facets_type_value ON facets(facet_type, value);
-CREATE INDEX IF NOT EXISTS idx_facets_conversation ON facets(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_facets_segment ON facets(segment_id);
 CREATE INDEX IF NOT EXISTS idx_facets_analysis_run ON facets(analysis_run_id);
 CREATE INDEX IF NOT EXISTS idx_facets_person ON facets(person_id);
 CREATE INDEX IF NOT EXISTS idx_facets_value ON facets(value);
@@ -453,7 +484,7 @@ CREATE TABLE IF NOT EXISTS embeddings (
     id TEXT PRIMARY KEY,
 
     -- What is embedded
-    entity_type TEXT NOT NULL,           -- "event", "conversation", "facet", "person", "thread"
+    entity_type TEXT NOT NULL,           -- "event", "segment", "facet", "person", "thread"
     entity_id TEXT NOT NULL,             -- ID of the embedded entity
 
     -- The embedding
@@ -472,10 +503,35 @@ CREATE TABLE IF NOT EXISTS embeddings (
 CREATE INDEX IF NOT EXISTS idx_embeddings_entity ON embeddings(entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_embeddings_model ON embeddings(model);
 
+-- FTS5 full-text search index for events
+-- Provides fast BM25-based lexical search over event content
+CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
+    event_id UNINDEXED,     -- Link to events table (not indexed)
+    channel UNINDEXED,      -- For filtering (not indexed)
+    content,                -- Main searchable content
+    tokenize='porter unicode61'
+);
+
+-- FTS5 triggers to keep index in sync with events table
+CREATE TRIGGER IF NOT EXISTS events_fts_insert AFTER INSERT ON events BEGIN
+    INSERT INTO events_fts(event_id, channel, content)
+    VALUES (new.id, new.channel, COALESCE(new.content, ''));
+END;
+
+CREATE TRIGGER IF NOT EXISTS events_fts_update AFTER UPDATE ON events BEGIN
+    DELETE FROM events_fts WHERE event_id = old.id;
+    INSERT INTO events_fts(event_id, channel, content)
+    VALUES (new.id, new.channel, COALESCE(new.content, ''));
+END;
+
+CREATE TRIGGER IF NOT EXISTS events_fts_delete AFTER DELETE ON events BEGIN
+    DELETE FROM events_fts WHERE event_id = old.id;
+END;
+
 -- Insert initial schema version
 INSERT OR IGNORE INTO schema_version (version, applied_at)
-VALUES (9, strftime('%s', 'now'));
+VALUES (12, strftime('%s', 'now'));
 
--- NOTE: pii_extraction_v1 analysis type is now registered via `comms compute seed` command
+-- NOTE: pii_extraction_v1 analysis type is now registered via `cortex compute seed` command
 -- This matches the pattern used for convo-all-v1 and is more maintainable
--- Run `comms compute seed` after initialization to register analysis types
+-- Run `cortex compute seed` after initialization to register analysis types

@@ -14,7 +14,7 @@ type Event struct {
 	ID         string  `json:"id"`
 	Type       string  `json:"type"`
 	Adapter    *string `json:"adapter,omitempty"`
-	CommsEvent *string `json:"comms_event_id,omitempty"`
+	CommsEvent *string `json:"cortex_event_id,omitempty"`
 	CreatedAt  int64   `json:"created_at"`
 	Payload    *string `json:"payload_json,omitempty"`
 }
@@ -26,7 +26,7 @@ func ensureTable(db *sql.DB) error {
 			id TEXT NOT NULL UNIQUE,
 			type TEXT NOT NULL,
 			adapter TEXT,
-			comms_event_id TEXT,
+			cortex_event_id TEXT,
 			created_at INTEGER NOT NULL,
 			payload_json TEXT
 		)
@@ -37,7 +37,7 @@ func ensureTable(db *sql.DB) error {
 	return nil
 }
 
-func Emit(db *sql.DB, typ string, adapter string, commsEventID string, payload any) error {
+func Emit(db *sql.DB, typ string, adapter string, cortexEventID string, payload any) error {
 	if typ == "" {
 		return fmt.Errorf("type is required")
 	}
@@ -52,8 +52,8 @@ func Emit(db *sql.DB, typ string, adapter string, commsEventID string, payload a
 		adapterVal = adapter
 	}
 	var eventVal any
-	if commsEventID != "" {
-		eventVal = commsEventID
+	if cortexEventID != "" {
+		eventVal = cortexEventID
 	}
 	var payloadVal any
 	if payload != nil {
@@ -65,7 +65,7 @@ func Emit(db *sql.DB, typ string, adapter string, commsEventID string, payload a
 	}
 
 	_, err := db.Exec(`
-		INSERT INTO bus_events (id, type, adapter, comms_event_id, created_at, payload_json)
+		INSERT INTO bus_events (id, type, adapter, cortex_event_id, created_at, payload_json)
 		VALUES (?, ?, ?, ?, ?, ?)
 	`, id, typ, adapterVal, eventVal, now, payloadVal)
 	if err != nil {
@@ -82,7 +82,7 @@ func List(db *sql.DB, afterSeq int64, limit int) ([]Event, error) {
 		limit = 100
 	}
 	rows, err := db.Query(`
-		SELECT seq, id, type, adapter, comms_event_id, created_at, payload_json
+		SELECT seq, id, type, adapter, cortex_event_id, created_at, payload_json
 		FROM bus_events
 		WHERE seq > ?
 		ORDER BY seq ASC
@@ -97,16 +97,16 @@ func List(db *sql.DB, afterSeq int64, limit int) ([]Event, error) {
 	for rows.Next() {
 		var e Event
 		var adapter sql.NullString
-		var commsEvent sql.NullString
+		var cortexEvent sql.NullString
 		var payload sql.NullString
-		if err := rows.Scan(&e.Seq, &e.ID, &e.Type, &adapter, &commsEvent, &e.CreatedAt, &payload); err != nil {
+		if err := rows.Scan(&e.Seq, &e.ID, &e.Type, &adapter, &cortexEvent, &e.CreatedAt, &payload); err != nil {
 			return nil, fmt.Errorf("failed to scan bus event: %w", err)
 		}
 		if adapter.Valid {
 			e.Adapter = &adapter.String
 		}
-		if commsEvent.Valid {
-			e.CommsEvent = &commsEvent.String
+		if cortexEvent.Valid {
+			e.CommsEvent = &cortexEvent.String
 		}
 		if payload.Valid {
 			e.Payload = &payload.String

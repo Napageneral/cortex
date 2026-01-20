@@ -15,31 +15,31 @@ var FacetToFactMapping = map[string]struct {
 	Category string
 	FactType string
 }{
-	"pii_email_personal":   {CategoryContactInfo, FactTypeEmailPersonal},
-	"pii_email_work":       {CategoryContactInfo, FactTypeEmailWork},
-	"pii_email_school":     {CategoryContactInfo, FactTypeEmailSchool},
-	"pii_phone_mobile":     {CategoryContactInfo, FactTypePhoneMobile},
-	"pii_phone_home":       {CategoryContactInfo, FactTypePhoneHome},
-	"pii_phone_work":       {CategoryContactInfo, FactTypePhoneWork},
-	"pii_full_legal_name":  {CategoryCoreIdentity, FactTypeFullLegalName},
-	"pii_given_name":       {CategoryCoreIdentity, FactTypeGivenName},
-	"pii_family_name":      {CategoryCoreIdentity, FactTypeFamilyName},
-	"pii_birthdate":        {CategoryCoreIdentity, FactTypeBirthdate},
-	"pii_employer_current": {CategoryProfessional, FactTypeEmployerCurrent},
-	"pii_business_owned":   {CategoryProfessional, FactTypeBusinessOwned},
-	"pii_business_role":    {CategoryProfessional, FactTypeBusinessRole},
-	"pii_profession":       {CategoryProfessional, FactTypeProfession},
-	"pii_location_current": {CategoryLocation, FactTypeLocationCurrent},
+	"pii_email_personal":    {CategoryContactInfo, FactTypeEmailPersonal},
+	"pii_email_work":        {CategoryContactInfo, FactTypeEmailWork},
+	"pii_email_school":      {CategoryContactInfo, FactTypeEmailSchool},
+	"pii_phone_mobile":      {CategoryContactInfo, FactTypePhoneMobile},
+	"pii_phone_home":        {CategoryContactInfo, FactTypePhoneHome},
+	"pii_phone_work":        {CategoryContactInfo, FactTypePhoneWork},
+	"pii_full_legal_name":   {CategoryCoreIdentity, FactTypeFullLegalName},
+	"pii_given_name":        {CategoryCoreIdentity, FactTypeGivenName},
+	"pii_family_name":       {CategoryCoreIdentity, FactTypeFamilyName},
+	"pii_birthdate":         {CategoryCoreIdentity, FactTypeBirthdate},
+	"pii_employer_current":  {CategoryProfessional, FactTypeEmployerCurrent},
+	"pii_business_owned":    {CategoryProfessional, FactTypeBusinessOwned},
+	"pii_business_role":     {CategoryProfessional, FactTypeBusinessRole},
+	"pii_profession":        {CategoryProfessional, FactTypeProfession},
+	"pii_location_current":  {CategoryLocation, FactTypeLocationCurrent},
 	"pii_spouse_first_name": {CategoryRelationships, FactTypeSpouseFirstName},
-	"pii_school_attended":  {CategoryEducation, FactTypeSchoolAttended},
-	"pii_social_twitter":   {CategoryDigitalIdentity, FactTypeSocialTwitter},
-	"pii_social_instagram": {CategoryDigitalIdentity, FactTypeSocialInstagram},
-	"pii_social_linkedin":  {CategoryDigitalIdentity, FactTypeSocialLinkedIn},
-	"pii_social_facebook":  {CategoryDigitalIdentity, FactTypeSocialFacebook},
-	"pii_username_generic": {CategoryDigitalIdentity, FactTypeUsernameGeneric},
-	"pii_ssn":              {CategoryGovernmentID, FactTypeSSN},
-	"pii_passport_number":  {CategoryGovernmentID, FactTypePassportNumber},
-	"pii_drivers_license":  {CategoryGovernmentID, FactTypeDriversLicense},
+	"pii_school_attended":   {CategoryEducation, FactTypeSchoolAttended},
+	"pii_social_twitter":    {CategoryDigitalIdentity, FactTypeSocialTwitter},
+	"pii_social_instagram":  {CategoryDigitalIdentity, FactTypeSocialInstagram},
+	"pii_social_linkedin":   {CategoryDigitalIdentity, FactTypeSocialLinkedIn},
+	"pii_social_facebook":   {CategoryDigitalIdentity, FactTypeSocialFacebook},
+	"pii_username_generic":  {CategoryDigitalIdentity, FactTypeUsernameGeneric},
+	"pii_ssn":               {CategoryGovernmentID, FactTypeSSN},
+	"pii_passport_number":   {CategoryGovernmentID, FactTypePassportNumber},
+	"pii_drivers_license":   {CategoryGovernmentID, FactTypeDriversLicense},
 }
 
 // SyncStats holds statistics about a sync operation
@@ -58,33 +58,30 @@ type SyncStats struct {
 func SyncFacetsToPersonFacts(db *sql.DB) (*SyncStats, error) {
 	stats := &SyncStats{}
 
-	// Get completed pii_extraction analysis runs that haven't been synced
-	// We track sync status by checking if facets have corresponding person_facts
+	// Get completed pii_extraction analysis runs with JSON output
 	rows, err := db.Query(`
-		SELECT DISTINCT ar.id, ar.conversation_id
+		SELECT DISTINCT ar.id, ar.segment_id
 		FROM analysis_runs ar
 		JOIN analysis_types at ON ar.analysis_type_id = at.id
 		WHERE at.name = 'pii_extraction'
 		AND ar.status = 'completed'
-		AND EXISTS (
-			SELECT 1 FROM facets f 
-			WHERE f.analysis_run_id = ar.id
-		)
+		AND ar.output_text IS NOT NULL
+		AND ar.output_text != ''
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("query analysis runs: %w", err)
 	}
 
 	var runs []struct {
-		ID             string
-		ConversationID string
+		ID        string
+		SegmentID string
 	}
 	for rows.Next() {
 		var run struct {
-			ID             string
-			ConversationID string
+			ID        string
+			SegmentID string
 		}
-		if err := rows.Scan(&run.ID, &run.ConversationID); err != nil {
+		if err := rows.Scan(&run.ID, &run.SegmentID); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -96,7 +93,7 @@ func SyncFacetsToPersonFacts(db *sql.DB) (*SyncStats, error) {
 	}
 
 	for _, run := range runs {
-		runStats, err := syncAnalysisRun(db, run.ID, run.ConversationID)
+		runStats, err := syncAnalysisRun(db, run.ID, run.SegmentID)
 		if err != nil {
 			stats.Errors++
 			continue
@@ -113,23 +110,23 @@ func SyncFacetsToPersonFacts(db *sql.DB) (*SyncStats, error) {
 }
 
 // syncAnalysisRun processes a single analysis run's facets
-func syncAnalysisRun(db *sql.DB, runID, conversationID string) (*SyncStats, error) {
+func syncAnalysisRun(db *sql.DB, runID, segmentID string) (*SyncStats, error) {
 	stats := &SyncStats{}
 
-	// Get the channel for this conversation (for source_channel)
+	// Get the channel for this segment (for source_channel)
 	var channel sql.NullString
 	err := db.QueryRow(`
-		SELECT channel FROM conversations WHERE id = ?
-	`, conversationID).Scan(&channel)
+		SELECT channel FROM segments WHERE id = ?
+	`, segmentID).Scan(&channel)
 	if err != nil {
-		return nil, fmt.Errorf("get conversation channel: %w", err)
+		return nil, fmt.Errorf("get segment channel: %w", err)
 	}
 
 	// Prefer parsing full JSON output for attribution-aware facts.
 	var outputText sql.NullString
 	if err := db.QueryRow(`SELECT output_text FROM analysis_runs WHERE id = ?`, runID).Scan(&outputText); err == nil {
 		if outputText.Valid && outputText.String != "" {
-			runStats, err := ProcessPIIExtractionOutput(db, runID, conversationID, outputText.String)
+			runStats, err := ProcessPIIExtractionOutput(db, runID, segmentID, outputText.String)
 			if err == nil {
 				// Use JSON output path only to avoid duplicate unattributed facts.
 				return runStats, nil
@@ -213,10 +210,10 @@ func syncAnalysisRun(db *sql.DB, runID, conversationID string) (*SyncStats, erro
 			// Insert into unattributed_facts
 			_, err := db.Exec(`
 				INSERT INTO unattributed_facts (
-					id, fact_type, fact_value, source_conversation_id, context, created_at
+					id, fact_type, fact_value, source_segment_id, context, created_at
 				) VALUES (?, ?, ?, ?, ?, ?)
 				ON CONFLICT DO NOTHING
-			`, uuid.New().String(), mapping.FactType, value, conversationID, metadataJSON.String, now)
+			`, uuid.New().String(), mapping.FactType, value, segmentID, metadataJSON.String, now)
 			if err == nil {
 				stats.UnattributedCreated++
 			}
@@ -231,7 +228,7 @@ func syncAnalysisRun(db *sql.DB, runID, conversationID string) (*SyncStats, erro
 			FactValue:          value,
 			Confidence:         0.5,
 			SourceType:         sourceType,
-			SourceConversation: &conversationID,
+			SourceSegment:      &segmentID,
 			SourceFacetID:      &facetID,
 			Evidence:           evidence,
 		}
@@ -259,12 +256,12 @@ func syncAnalysisRun(db *sql.DB, runID, conversationID string) (*SyncStats, erro
 
 // SyncSingleRun processes a single analysis run by ID
 func SyncSingleRun(db *sql.DB, runID string) (*SyncStats, error) {
-	var conversationID string
-	err := db.QueryRow(`SELECT conversation_id FROM analysis_runs WHERE id = ?`, runID).Scan(&conversationID)
+	var segmentID string
+	err := db.QueryRow(`SELECT segment_id FROM analysis_runs WHERE id = ?`, runID).Scan(&segmentID)
 	if err != nil {
 		return nil, fmt.Errorf("get analysis run: %w", err)
 	}
-	return syncAnalysisRun(db, runID, conversationID)
+	return syncAnalysisRun(db, runID, segmentID)
 }
 
 // isSensitiveFactType determines if a fact type should be marked as sensitive
@@ -279,8 +276,22 @@ func isSensitiveFactType(factType string) bool {
 
 // ProcessPIIExtractionOutput processes the full JSON output from PII extraction
 // This is called after the LLM returns structured output to sync ALL extracted data
-func ProcessPIIExtractionOutput(db *sql.DB, runID, conversationID, outputJSON string) (*SyncStats, error) {
+func ProcessPIIExtractionOutput(db *sql.DB, runID, segmentID, outputJSON string) (*SyncStats, error) {
 	stats := &SyncStats{}
+
+	type factShape struct {
+		SubjectKind      string `json:"subject_kind"`
+		SubjectRef       string `json:"subject_ref"`
+		Category         string `json:"category"`
+		FactType         string `json:"fact_type"`
+		Value            string `json:"value"`
+		Confidence       string `json:"confidence"`
+		Evidence         string `json:"evidence"`
+		SelfDisclosed    bool   `json:"self_disclosed"`
+		Source           string `json:"source"`
+		RelatedPersonRef string `json:"related_person_ref"`
+		Note             string `json:"note"`
+	}
 
 	type outputShape struct {
 		ExtractionMetadata struct {
@@ -288,22 +299,14 @@ func ProcessPIIExtractionOutput(db *sql.DB, runID, conversationID, outputJSON st
 			PrimaryContactName       string `json:"primary_contact_name"`
 			PrimaryContactIdentifier string `json:"primary_contact_identifier"`
 		} `json:"extraction_metadata"`
-		Persons []struct {
-			Reference        string                            `json:"reference"`
-			IsPrimaryContact bool                              `json:"is_primary_contact"`
-			PII              map[string]map[string]interface{} `json:"pii"`
-		} `json:"persons"`
-		NewIdentityCandidates []struct {
-			Reference  string                 `json:"reference"`
-			KnownFacts map[string]interface{} `json:"known_facts"`
-			Note       string                 `json:"note"`
-		} `json:"new_identity_candidates"`
+		Facts             []factShape `json:"facts"`
 		UnattributedFacts []struct {
 			FactType             string   `json:"fact_type"`
 			FactValue            string   `json:"fact_value"`
 			SharedBy             string   `json:"shared_by"`
 			Context              string   `json:"context"`
 			PossibleAttributions []string `json:"possible_attributions"`
+			Note                 string   `json:"note"`
 		} `json:"unattributed_facts"`
 	}
 
@@ -317,22 +320,16 @@ func ProcessPIIExtractionOutput(db *sql.DB, runID, conversationID, outputJSON st
 	}
 
 	now := time.Now().Unix()
-	participants, _ := loadConversationParticipants(db, conversationID)
+	participants, _ := loadSegmentParticipants(db, segmentID)
 	meID, _ := getMePersonID(db)
 
 	for _, output := range outputs {
 		channel := output.ExtractionMetadata.Channel
 		if channel == "" {
-			channel = getConversationChannel(db, conversationID)
+			channel = getSegmentChannel(db, segmentID)
 		}
 
-		primaryRef := ""
-		for _, p := range output.Persons {
-			if p.IsPrimaryContact {
-				primaryRef = p.Reference
-				break
-			}
-		}
+		primaryRef := output.ExtractionMetadata.PrimaryContactName
 
 		primaryPersonID := ""
 		if output.ExtractionMetadata.PrimaryContactIdentifier != "" {
@@ -354,114 +351,103 @@ func ProcessPIIExtractionOutput(db *sql.DB, runID, conversationID, outputJSON st
 			}
 		}
 
-		// Process each person's PII
-		for _, person := range output.Persons {
-			var personID string
-			if person.IsPrimaryContact {
-				personID = primaryPersonID
+		thirdPartyFacts := map[string][]factShape{}
+
+		for _, fact := range output.Facts {
+			if fact.Category == "" || fact.FactType == "" || fact.Value == "" {
+				continue
 			}
 
-			if personID == "" && meID != "" && refMatchesPerson(person.Reference, meID, participants) {
-				personID = meID
+			factMap := map[string]interface{}{
+				"confidence":     fact.Confidence,
+				"evidence":       []interface{}{fact.Evidence},
+				"self_disclosed": fact.SelfDisclosed,
+				"source":         fact.Source,
 			}
-			if personID == "" {
-				if matchID, ok := matchParticipantByName(participants, person.Reference); ok {
-					personID = matchID
+
+			switch strings.ToLower(strings.TrimSpace(fact.SubjectKind)) {
+			case "user":
+				if meID != "" {
+					processExtractedFact(db, stats, meID, fact.Category, fact.FactType, fact.Value, factMap, segmentID, channel, runID, now)
 				}
+			case "primary_contact":
+				if primaryPersonID != "" {
+					processExtractedFact(db, stats, primaryPersonID, fact.Category, fact.FactType, fact.Value, factMap, segmentID, channel, runID, now)
+				}
+			case "third_party":
+				ref := strings.TrimSpace(fact.SubjectRef)
+				if ref == "" {
+					ref = "Unknown"
+				}
+				thirdPartyFacts[ref] = append(thirdPartyFacts[ref], fact)
+			default:
+				ref := strings.TrimSpace(fact.SubjectRef)
+				if ref != "" {
+					if matchID, ok := matchParticipantByName(participants, ref); ok {
+						processExtractedFact(db, stats, matchID, fact.Category, fact.FactType, fact.Value, factMap, segmentID, channel, runID, now)
+						continue
+					}
+				}
+				ref = "Unknown"
+				thirdPartyFacts[ref] = append(thirdPartyFacts[ref], fact)
 			}
-			if personID == "" {
-				err := db.QueryRow(`
-					SELECT id FROM persons 
-					WHERE canonical_name LIKE ? OR display_name LIKE ?
-					LIMIT 1
-				`, "%"+person.Reference+"%", "%"+person.Reference+"%").Scan(&personID)
-				if err != nil {
+		}
+
+		for ref, facts := range thirdPartyFacts {
+			name := ref
+			cleanFacts := map[string]string{}
+			hasStrongIdentifier := false
+
+			for _, fact := range facts {
+				if fact.FactType == "" || fact.Value == "" {
 					continue
 				}
-			}
 
-			// Process all PII categories
-			for category, facts := range person.PII {
-				for factKey, factData := range facts {
-					factMap, ok := factData.(map[string]interface{})
-					if !ok {
-						continue
+				mapped := mapFactKey(fact.FactType)
+				if isStrongThirdPartyIdentifier(mapped) {
+					hasStrongIdentifier = true
+				}
+				if isAllowedThirdPartyFactType(mapped) {
+					if existing, ok := cleanFacts[mapped]; ok && existing != "" {
+						cleanFacts[mapped] = existing + "; " + fact.Value
+					} else {
+						cleanFacts[mapped] = fact.Value
 					}
-
-					value, _ := factMap["value"].(string)
-					if value == "" {
-						// Handle array values
-						if arr, ok := factMap["value"].([]interface{}); ok && len(arr) > 0 {
-							for _, v := range arr {
-								if s, ok := v.(string); ok {
-									processExtractedFact(db, stats, personID, category, factKey, s, factMap, conversationID, channel, runID, now)
-								}
-							}
-						}
-						continue
+					if mapped == FactTypeGivenName && name == "" {
+						name = fact.Value
 					}
-
-					processExtractedFact(db, stats, personID, category, factKey, value, factMap, conversationID, channel, runID, now)
 				}
 			}
-		}
 
-		// Process new identity candidates (third parties)
-		for _, candidate := range output.NewIdentityCandidates {
-		name := candidate.Reference
-		if givenName, ok := candidate.KnownFacts["given_name"].(string); ok && givenName != "" {
-			name = givenName
-		}
-
-		cleanFacts := map[string]string{}
-		hasStrongIdentifier := false
-		for factKey, factValue := range candidate.KnownFacts {
-			strVal, ok := factValue.(string)
-			if !ok || strVal == "" {
-				continue
-			}
-			if isMetaKnownFactKey(factKey) {
+			if !hasStrongIdentifier {
+				_ = insertCandidateMention(db, name, cleanFacts, segmentID, now)
 				continue
 			}
 
-			mapped := mapFactKey(factKey)
-			if isStrongThirdPartyIdentifier(mapped) {
-				hasStrongIdentifier = true
-			}
-			if isAllowedThirdPartyFactType(mapped) {
-				cleanFacts[mapped] = strVal
-			}
-		}
+			personID := uuid.New().String()
+			_, err := db.Exec(`
+				INSERT INTO persons (id, canonical_name, relationship_type, created_at, updated_at)
+				VALUES (?, ?, 'third_party', ?, ?)
+			`, personID, name, now, now)
+			if err == nil {
+				stats.ThirdPartiesCreated++
 
-		if !hasStrongIdentifier {
-			_ = insertCandidateMention(db, name, cleanFacts, conversationID, now)
-			continue
-		}
-
-		personID := uuid.New().String()
-		_, err := db.Exec(`
-			INSERT INTO persons (id, canonical_name, relationship_type, created_at, updated_at)
-			VALUES (?, ?, 'third_party', ?, ?)
-		`, personID, name, now, now)
-		if err == nil {
-			stats.ThirdPartiesCreated++
-
-			for factKey, factValue := range cleanFacts {
-				fact := PersonFact{
-					PersonID:           personID,
-					Category:           CategoryCoreIdentity,
-					FactType:           factKey,
-					FactValue:          factValue,
-					Confidence:         0.5,
-					SourceType:         "mentioned",
-					SourceConversation: &conversationID,
+				for factKey, factValue := range cleanFacts {
+					fact := PersonFact{
+						PersonID:      personID,
+						Category:      CategoryCoreIdentity,
+						FactType:      factKey,
+						FactValue:     factValue,
+						Confidence:    0.5,
+						SourceType:    "mentioned",
+						SourceSegment: &segmentID,
+					}
+					if channel != "" {
+						fact.SourceChannel = &channel
+					}
+					InsertFact(db, fact)
 				}
-				if channel != "" {
-					fact.SourceChannel = &channel
-				}
-				InsertFact(db, fact)
 			}
-		}
 		}
 
 		// Process unattributed facts
@@ -484,11 +470,11 @@ func ProcessPIIExtractionOutput(db *sql.DB, runID, conversationID, outputJSON st
 			_, err := db.Exec(`
 				INSERT INTO unattributed_facts (
 					id, fact_type, fact_value, shared_by_person_id,
-					source_conversation_id, context, possible_attributions, created_at
+					source_segment_id, context, possible_attributions, created_at
 				) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 				ON CONFLICT DO NOTHING
 			`, uuid.New().String(), uf.FactType, uf.FactValue, sharedByPersonID,
-				conversationID, uf.Context, string(attributionsJSON), now)
+				segmentID, uf.Context, string(attributionsJSON), now)
 			if err == nil {
 				stats.UnattributedCreated++
 			}
@@ -498,29 +484,29 @@ func ProcessPIIExtractionOutput(db *sql.DB, runID, conversationID, outputJSON st
 	return stats, nil
 }
 
-type conversationParticipant struct {
+type segmentParticipant struct {
 	ID            string
 	CanonicalName string
 	DisplayName   string
 	IsMe          bool
 }
 
-func loadConversationParticipants(db *sql.DB, conversationID string) ([]conversationParticipant, error) {
+func loadSegmentParticipants(db *sql.DB, segmentID string) ([]segmentParticipant, error) {
 	rows, err := db.Query(`
 		SELECT DISTINCT p.id, COALESCE(p.canonical_name, ''), COALESCE(p.display_name, ''), p.is_me
 		FROM persons p
 		JOIN event_participants ep ON p.id = ep.person_id
-		JOIN conversation_events ce ON ce.event_id = ep.event_id
-		WHERE ce.conversation_id = ?
-	`, conversationID)
+		JOIN segment_events se ON se.event_id = ep.event_id
+		WHERE se.segment_id = ?
+	`, segmentID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var out []conversationParticipant
+	var out []segmentParticipant
 	for rows.Next() {
-		var p conversationParticipant
+		var p segmentParticipant
 		var isMe int
 		if err := rows.Scan(&p.ID, &p.CanonicalName, &p.DisplayName, &isMe); err != nil {
 			return nil, err
@@ -531,9 +517,9 @@ func loadConversationParticipants(db *sql.DB, conversationID string) ([]conversa
 	return out, rows.Err()
 }
 
-func getConversationChannel(db *sql.DB, conversationID string) string {
+func getSegmentChannel(db *sql.DB, segmentID string) string {
 	var channel sql.NullString
-	_ = db.QueryRow(`SELECT channel FROM conversations WHERE id = ?`, conversationID).Scan(&channel)
+	_ = db.QueryRow(`SELECT channel FROM segments WHERE id = ?`, segmentID).Scan(&channel)
 	if channel.Valid {
 		return channel.String
 	}
@@ -549,7 +535,7 @@ func getMePersonID(db *sql.DB) (string, error) {
 	return id, nil
 }
 
-func matchParticipantByName(participants []conversationParticipant, reference string) (string, bool) {
+func matchParticipantByName(participants []segmentParticipant, reference string) (string, bool) {
 	ref := strings.ToLower(strings.TrimSpace(reference))
 	if ref == "" {
 		return "", false
@@ -563,7 +549,7 @@ func matchParticipantByName(participants []conversationParticipant, reference st
 	return "", false
 }
 
-func singleNonMeParticipant(participants []conversationParticipant) string {
+func singleNonMeParticipant(participants []segmentParticipant) string {
 	var nonMe string
 	for _, p := range participants {
 		if p.IsMe {
@@ -577,7 +563,7 @@ func singleNonMeParticipant(participants []conversationParticipant) string {
 	return nonMe
 }
 
-func refMatchesPerson(reference, personID string, participants []conversationParticipant) bool {
+func refMatchesPerson(reference, personID string, participants []segmentParticipant) bool {
 	ref := strings.ToLower(strings.TrimSpace(reference))
 	if ref == "" {
 		return false
@@ -595,7 +581,7 @@ func refMatchesPerson(reference, personID string, participants []conversationPar
 }
 
 // processExtractedFact handles inserting a single extracted fact
-func processExtractedFact(db *sql.DB, stats *SyncStats, personID, category, factKey, value string, factMap map[string]interface{}, conversationID, channel, runID string, now int64) {
+func processExtractedFact(db *sql.DB, stats *SyncStats, personID, category, factKey, value string, factMap map[string]interface{}, segmentID, channel, runID string, now int64) {
 	// Map the fact key to our standard fact types
 	factType := mapFactKey(factKey)
 	mappedCategory := mapCategory(category)
@@ -643,7 +629,7 @@ func processExtractedFact(db *sql.DB, stats *SyncStats, personID, category, fact
 		FactValue:          value,
 		Confidence:         confidence,
 		SourceType:         sourceType,
-		SourceConversation: &conversationID,
+		SourceSegment:      &segmentID,
 		Evidence:           evidence,
 		IsSensitive:        isSensitiveFactType(factType),
 	}
@@ -660,32 +646,32 @@ func processExtractedFact(db *sql.DB, stats *SyncStats, personID, category, fact
 // mapFactKey maps extraction output keys to our standard fact type constants
 func mapFactKey(key string) string {
 	keyMap := map[string]string{
-		"full_legal_name":   FactTypeFullLegalName,
-		"given_name":        FactTypeGivenName,
-		"family_name":       FactTypeFamilyName,
-		"date_of_birth":     FactTypeBirthdate,
-		"nicknames":         "nickname",
-		"email_personal":    FactTypeEmailPersonal,
-		"email_work":        FactTypeEmailWork,
-		"email_school":      FactTypeEmailSchool,
-		"phone_mobile":      FactTypePhoneMobile,
-		"phone_home":        FactTypePhoneHome,
-		"phone_work":        FactTypePhoneWork,
-		"employer_current":  FactTypeEmployerCurrent,
-		"business_owned":    FactTypeBusinessOwned,
-		"business_role":     FactTypeBusinessRole,
-		"profession":        FactTypeProfession,
-		"location_current":  FactTypeLocationCurrent,
-		"spouse":            FactTypeSpouseFirstName,
-		"school_previous":   FactTypeSchoolAttended,
-		"social_twitter":    FactTypeSocialTwitter,
-		"social_instagram":  FactTypeSocialInstagram,
-		"social_linkedin":   FactTypeSocialLinkedIn,
-		"social_facebook":   FactTypeSocialFacebook,
-		"username_unknown":  FactTypeUsernameGeneric,
-		"ssn":               FactTypeSSN,
-		"passport_number":   FactTypePassportNumber,
-		"drivers_license":   FactTypeDriversLicense,
+		"full_legal_name":  FactTypeFullLegalName,
+		"given_name":       FactTypeGivenName,
+		"family_name":      FactTypeFamilyName,
+		"date_of_birth":    FactTypeBirthdate,
+		"nicknames":        "nickname",
+		"email_personal":   FactTypeEmailPersonal,
+		"email_work":       FactTypeEmailWork,
+		"email_school":     FactTypeEmailSchool,
+		"phone_mobile":     FactTypePhoneMobile,
+		"phone_home":       FactTypePhoneHome,
+		"phone_work":       FactTypePhoneWork,
+		"employer_current": FactTypeEmployerCurrent,
+		"business_owned":   FactTypeBusinessOwned,
+		"business_role":    FactTypeBusinessRole,
+		"profession":       FactTypeProfession,
+		"location_current": FactTypeLocationCurrent,
+		"spouse":           FactTypeSpouseFirstName,
+		"school_previous":  FactTypeSchoolAttended,
+		"social_twitter":   FactTypeSocialTwitter,
+		"social_instagram": FactTypeSocialInstagram,
+		"social_linkedin":  FactTypeSocialLinkedIn,
+		"social_facebook":  FactTypeSocialFacebook,
+		"username_unknown": FactTypeUsernameGeneric,
+		"ssn":              FactTypeSSN,
+		"passport_number":  FactTypePassportNumber,
+		"drivers_license":  FactTypeDriversLicense,
 	}
 	if mapped, ok := keyMap[key]; ok {
 		return mapped
@@ -752,16 +738,16 @@ func isAllowedThirdPartyFactType(factType string) bool {
 	return false
 }
 
-func insertCandidateMention(db *sql.DB, reference string, knownFacts map[string]string, conversationID string, now int64) error {
+func insertCandidateMention(db *sql.DB, reference string, knownFacts map[string]string, segmentID string, now int64) error {
 	if err := ensureCandidateMentionsTable(db); err != nil {
 		return err
 	}
 	factsJSON, _ := json.Marshal(knownFacts)
 	_, err := db.Exec(`
 		INSERT INTO candidate_mentions (
-			id, reference, known_facts_json, source_conversation_id, created_at
+			id, reference, known_facts_json, source_segment_id, created_at
 		) VALUES (?, ?, ?, ?, ?)
-	`, uuid.New().String(), reference, string(factsJSON), conversationID, now)
+	`, uuid.New().String(), reference, string(factsJSON), segmentID, now)
 	return err
 }
 
@@ -771,7 +757,7 @@ func ensureCandidateMentionsTable(db *sql.DB) error {
 			id TEXT PRIMARY KEY,
 			reference TEXT NOT NULL,
 			known_facts_json TEXT,
-			source_conversation_id TEXT,
+			source_segment_id TEXT,
 			created_at INTEGER NOT NULL
 		)
 	`)

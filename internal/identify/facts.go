@@ -19,7 +19,7 @@ type PersonFact struct {
 	Confidence         float64
 	SourceType         string
 	SourceChannel      *string
-	SourceConversation *string
+	SourceSegment      *string
 	SourceFacetID      *string
 	Evidence           *string
 	IsSensitive        bool
@@ -157,7 +157,7 @@ func InsertFact(db *sql.DB, fact PersonFact) error {
 	_, err := db.Exec(`
 		INSERT INTO person_facts (
 			id, person_id, category, fact_type, fact_value,
-			confidence, source_type, source_channel, source_conversation_id,
+			confidence, source_type, source_channel, source_segment_id,
 			source_facet_id, evidence, is_sensitive, is_identifier, is_hard_identifier,
 			created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -165,13 +165,13 @@ func InsertFact(db *sql.DB, fact PersonFact) error {
 			confidence = MAX(confidence, excluded.confidence),
 			source_type = excluded.source_type,
 			source_channel = COALESCE(excluded.source_channel, source_channel),
-			source_conversation_id = COALESCE(excluded.source_conversation_id, source_conversation_id),
+			source_segment_id = COALESCE(excluded.source_segment_id, source_segment_id),
 			source_facet_id = COALESCE(excluded.source_facet_id, source_facet_id),
 			evidence = COALESCE(excluded.evidence, evidence),
 			updated_at = excluded.updated_at
 	`,
 		fact.ID, fact.PersonID, fact.Category, fact.FactType, fact.FactValue,
-		fact.Confidence, fact.SourceType, fact.SourceChannel, fact.SourceConversation,
+		fact.Confidence, fact.SourceType, fact.SourceChannel, fact.SourceSegment,
 		fact.SourceFacetID, fact.Evidence, boolToInt(fact.IsSensitive),
 		boolToInt(fact.IsIdentifier), boolToInt(fact.IsHardIdentifier),
 		fact.CreatedAt.Unix(), fact.UpdatedAt.Unix(),
@@ -189,7 +189,7 @@ func GetFactsForPerson(db *sql.DB, personID string) ([]PersonFact, error) {
 	rows, err := db.Query(`
 		SELECT
 			id, person_id, category, fact_type, fact_value,
-			confidence, source_type, source_channel, source_conversation_id,
+			confidence, source_type, source_channel, source_segment_id,
 			source_facet_id, evidence, is_sensitive, is_identifier, is_hard_identifier,
 			created_at, updated_at
 		FROM person_facts
@@ -218,7 +218,7 @@ func GetHardIdentifiers(db *sql.DB) ([]PersonFact, error) {
 	rows, err := db.Query(`
 		SELECT
 			id, person_id, category, fact_type, fact_value,
-			confidence, source_type, source_channel, source_conversation_id,
+			confidence, source_type, source_channel, source_segment_id,
 			source_facet_id, evidence, is_sensitive, is_identifier, is_hard_identifier,
 			created_at, updated_at
 		FROM person_facts
@@ -247,7 +247,7 @@ func GetFactsByType(db *sql.DB, factType string) ([]PersonFact, error) {
 	rows, err := db.Query(`
 		SELECT
 			id, person_id, category, fact_type, fact_value,
-			confidence, source_type, source_channel, source_conversation_id,
+			confidence, source_type, source_channel, source_segment_id,
 			source_facet_id, evidence, is_sensitive, is_identifier, is_hard_identifier,
 			created_at, updated_at
 		FROM person_facts
@@ -276,7 +276,7 @@ func GetFactsByCategory(db *sql.DB, personID string, category string) ([]PersonF
 	rows, err := db.Query(`
 		SELECT
 			id, person_id, category, fact_type, fact_value,
-			confidence, source_type, source_channel, source_conversation_id,
+			confidence, source_type, source_channel, source_segment_id,
 			source_facet_id, evidence, is_sensitive, is_identifier, is_hard_identifier,
 			created_at, updated_at
 		FROM person_facts
@@ -468,13 +468,13 @@ func FindTier1IdentifierCollisions(db *sql.DB) ([]FactCollision, error) {
 
 func scanPersonFact(rows *sql.Rows) (PersonFact, error) {
 	var fact PersonFact
-	var sourceChannel, sourceConversation, sourceFacetID, evidence sql.NullString
+	var sourceChannel, sourceSegment, sourceFacetID, evidence sql.NullString
 	var isSensitive, isIdentifier, isHardIdentifier int
 	var createdAt, updatedAt int64
 
 	err := rows.Scan(
 		&fact.ID, &fact.PersonID, &fact.Category, &fact.FactType, &fact.FactValue,
-		&fact.Confidence, &fact.SourceType, &sourceChannel, &sourceConversation,
+		&fact.Confidence, &fact.SourceType, &sourceChannel, &sourceSegment,
 		&sourceFacetID, &evidence, &isSensitive, &isIdentifier, &isHardIdentifier,
 		&createdAt, &updatedAt,
 	)
@@ -485,8 +485,8 @@ func scanPersonFact(rows *sql.Rows) (PersonFact, error) {
 	if sourceChannel.Valid {
 		fact.SourceChannel = &sourceChannel.String
 	}
-	if sourceConversation.Valid {
-		fact.SourceConversation = &sourceConversation.String
+	if sourceSegment.Valid {
+		fact.SourceSegment = &sourceSegment.String
 	}
 	if sourceFacetID.Valid {
 		fact.SourceFacetID = &sourceFacetID.String

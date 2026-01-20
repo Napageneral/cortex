@@ -30,7 +30,7 @@ func (a *IMessageAdapter) Name() string {
 	return "imessage"
 }
 
-func (a *IMessageAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (SyncResult, error) {
+func (a *IMessageAdapter) Sync(ctx context.Context, cortexDB *sql.DB, full bool) (SyncResult, error) {
 	startTime := time.Now()
 	result := SyncResult{Perf: map[string]string{}}
 
@@ -47,7 +47,7 @@ func (a *IMessageAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) 
 		// Use max ROWID from messages we've already synced
 		// The source_id for imessage events is the message GUID, but we need ROWID
 		// For now, use sync_watermarks table
-		row := commsDB.QueryRow("SELECT last_sync_at FROM sync_watermarks WHERE adapter = ?", a.Name())
+		row := cortexDB.QueryRow("SELECT last_sync_at FROM sync_watermarks WHERE adapter = ?", a.Name())
 		if err := row.Scan(&sinceRowID); err != nil && err != sql.ErrNoRows {
 			return result, fmt.Errorf("failed to get watermark: %w", err)
 		}
@@ -55,7 +55,7 @@ func (a *IMessageAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) 
 
 	// Get me person ID if exists
 	var mePersonID string
-	_ = commsDB.QueryRow("SELECT id FROM persons WHERE is_me = 1 LIMIT 1").Scan(&mePersonID)
+	_ = cortexDB.QueryRow("SELECT id FROM persons WHERE is_me = 1 LIMIT 1").Scan(&mePersonID)
 
 	// Call Eve library directly - no JSON, no CLI, no IPC
 	opts := imessage.SyncOptions{
@@ -65,14 +65,14 @@ func (a *IMessageAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) 
 		Full:        full,
 	}
 
-	syncResult, err := imessage.Sync(ctx, chatDB, commsDB, opts)
+	syncResult, err := imessage.Sync(ctx, chatDB, cortexDB, opts)
 	if err != nil {
 		return result, fmt.Errorf("sync failed: %w", err)
 	}
 
 	// Update watermark
 	if syncResult.MaxMessageRowID > sinceRowID {
-		_, err = commsDB.Exec(`
+		_, err = cortexDB.Exec(`
 			INSERT INTO sync_watermarks (adapter, last_sync_at)
 			VALUES (?, ?)
 			ON CONFLICT(adapter) DO UPDATE SET last_sync_at = excluded.last_sync_at

@@ -1,4 +1,4 @@
-module github.com/Napageneral/comms
+module github.com/Napageneral/cortex
 
 go 1.24.0
 

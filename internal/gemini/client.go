@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Napageneral/comms/internal/ratelimit"
+	"github.com/Napageneral/cortex/internal/ratelimit"
 )
 
 const (
@@ -156,10 +156,10 @@ type GenerateContentRequest struct {
 }
 
 type GenerationConfig struct {
-	ThinkingConfig   *ThinkingConfig `json:"thinkingConfig,omitempty"`
-	ResponseMimeType string          `json:"responseMimeType,omitempty"`
-	ResponseSchema   any             `json:"responseSchema,omitempty"`
-	ResponseJsonSchema any           `json:"responseJsonSchema,omitempty"`
+	ThinkingConfig     *ThinkingConfig `json:"thinkingConfig,omitempty"`
+	ResponseMimeType   string          `json:"responseMimeType,omitempty"`
+	ResponseSchema     any             `json:"responseSchema,omitempty"`
+	ResponseJsonSchema any             `json:"responseJsonSchema,omitempty"`
 }
 
 type ThinkingConfig struct {

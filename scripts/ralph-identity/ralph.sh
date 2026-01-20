@@ -50,7 +50,7 @@ for i in $(seq 1 $MAX_ITERATIONS); do
         
         # Show final stats
         echo "📊 Final Statistics:"
-        go run ./cmd/comms identify status --json 2>/dev/null || echo "   (status command not yet implemented)"
+        go run ./cmd/cortex identify status --json 2>/dev/null || echo "   (status command not yet implemented)"
         
         exit 0
     fi

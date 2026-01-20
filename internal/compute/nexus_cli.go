@@ -21,17 +21,17 @@ type terminalInvocation struct {
 	InvocationKind string `json:"invocation_kind,omitempty"`
 }
 
-func (e *Engine) buildNexusCLIOutput(ctx context.Context, convID string) (string, error) {
-	return e.buildInvocationOutput(ctx, convID, func(inv terminalInvocation) bool {
+func (e *Engine) buildNexusCLIOutput(ctx context.Context, segmentID string) (string, error) {
+	return e.buildInvocationOutput(ctx, segmentID, func(inv terminalInvocation) bool {
 		return inv.Binary == "nexus" || inv.Binary == "nexus-cloud"
 	})
 }
 
-func (e *Engine) buildTerminalInvocationOutput(ctx context.Context, convID string) (string, error) {
-	return e.buildInvocationOutput(ctx, convID, nil)
+func (e *Engine) buildTerminalInvocationOutput(ctx context.Context, segmentID string) (string, error) {
+	return e.buildInvocationOutput(ctx, segmentID, nil)
 }
 
-func (e *Engine) buildInvocationOutput(ctx context.Context, convID string, filter func(terminalInvocation) bool) (string, error) {
+func (e *Engine) buildInvocationOutput(ctx context.Context, segmentID string, filter func(terminalInvocation) bool) (string, error) {
 	rows, err := e.db.QueryContext(ctx, `
 		SELECT
 			ce.position,
@@ -39,11 +39,11 @@ func (e *Engine) buildInvocationOutput(ctx context.Context, convID string, filte
 			e.timestamp,
 			e.content,
 			e.source_adapter
-		FROM conversation_events ce
+		FROM segment_events ce
 		JOIN events e ON ce.event_id = e.id
-		WHERE ce.conversation_id = ?
+		WHERE ce.segment_id = ?
 		ORDER BY ce.position
-	`, convID)
+	`, segmentID)
 	if err != nil {
 		return "", err
 	}

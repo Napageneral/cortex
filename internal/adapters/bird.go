@@ -44,17 +44,17 @@ func (b *BirdAdapter) Name() string {
 	return "x"
 }
 
-func (b *BirdAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (SyncResult, error) {
+func (b *BirdAdapter) Sync(ctx context.Context, cortexDB *sql.DB, full bool) (SyncResult, error) {
 	startTime := time.Now()
 	result := SyncResult{}
 
-	// Enable foreign keys on comms DB
-	if _, err := commsDB.Exec("PRAGMA foreign_keys = ON"); err != nil {
+	// Enable foreign keys on cortex DB
+	if _, err := cortexDB.Exec("PRAGMA foreign_keys = ON"); err != nil {
 		return result, fmt.Errorf("failed to enable foreign keys: %w", err)
 	}
 
 	// Sync bookmarks (tweets you've saved)
-	bookmarksCreated, bookmarksPersons, err := b.syncBookmarks(ctx, commsDB)
+	bookmarksCreated, bookmarksPersons, err := b.syncBookmarks(ctx, cortexDB)
 	if err != nil {
 		fmt.Printf("Warning: failed to sync bookmarks: %v\n", err)
 	}
@@ -62,7 +62,7 @@ func (b *BirdAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Syn
 	result.PersonsCreated += bookmarksPersons
 
 	// Sync likes (tweets you've engaged with)
-	likesCreated, likesPersons, err := b.syncLikes(ctx, commsDB)
+	likesCreated, likesPersons, err := b.syncLikes(ctx, cortexDB)
 	if err != nil {
 		fmt.Printf("Warning: failed to sync likes: %v\n", err)
 	}
@@ -70,7 +70,7 @@ func (b *BirdAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Syn
 	result.PersonsCreated += likesPersons
 
 	// Sync mentions (tweets mentioning you)
-	mentionsCreated, mentionsPersons, err := b.syncMentions(ctx, commsDB)
+	mentionsCreated, mentionsPersons, err := b.syncMentions(ctx, cortexDB)
 	if err != nil {
 		fmt.Printf("Warning: failed to sync mentions: %v\n", err)
 	}
@@ -79,7 +79,7 @@ func (b *BirdAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Syn
 
 	// Update sync watermark
 	now := time.Now().Unix()
-	_, err = commsDB.Exec(`
+	_, err = cortexDB.Exec(`
 		INSERT INTO sync_watermarks (adapter, last_sync_at)
 		VALUES (?, ?)
 		ON CONFLICT(adapter) DO UPDATE SET last_sync_at = excluded.last_sync_at
@@ -108,28 +108,28 @@ type BirdTweet struct {
 	AuthorID string `json:"authorId"`
 }
 
-func (b *BirdAdapter) syncBookmarks(ctx context.Context, commsDB *sql.DB) (int, int, error) {
+func (b *BirdAdapter) syncBookmarks(ctx context.Context, cortexDB *sql.DB) (int, int, error) {
 	tweets, err := b.fetchTweets(ctx, "bookmarks", "-n", "100")
 	if err != nil {
 		return 0, 0, err
 	}
-	return b.syncTweets(commsDB, tweets, "bookmark")
+	return b.syncTweets(cortexDB, tweets, "bookmark")
 }
 
-func (b *BirdAdapter) syncLikes(ctx context.Context, commsDB *sql.DB) (int, int, error) {
+func (b *BirdAdapter) syncLikes(ctx context.Context, cortexDB *sql.DB) (int, int, error) {
 	tweets, err := b.fetchTweets(ctx, "likes", "-n", "100")
 	if err != nil {
 		return 0, 0, err
 	}
-	return b.syncTweets(commsDB, tweets, "like")
+	return b.syncTweets(cortexDB, tweets, "like")
 }
 
-func (b *BirdAdapter) syncMentions(ctx context.Context, commsDB *sql.DB) (int, int, error) {
+func (b *BirdAdapter) syncMentions(ctx context.Context, cortexDB *sql.DB) (int, int, error) {
 	tweets, err := b.fetchTweets(ctx, "mentions", "-n", "100")
 	if err != nil {
 		return 0, 0, err
 	}
-	return b.syncTweets(commsDB, tweets, "mention")
+	return b.syncTweets(cortexDB, tweets, "mention")
 }
 
 func (b *BirdAdapter) fetchTweets(ctx context.Context, command string, args ...string) ([]BirdTweet, error) {
@@ -160,7 +160,7 @@ func (b *BirdAdapter) fetchTweets(ctx context.Context, command string, args ...s
 	return tweets, nil
 }
 
-func (b *BirdAdapter) syncTweets(commsDB *sql.DB, tweets []BirdTweet, interactionType string) (int, int, error) {
+func (b *BirdAdapter) syncTweets(cortexDB *sql.DB, tweets []BirdTweet, interactionType string) (int, int, error) {
 	eventsCreated := 0
 	personsCreated := 0
 
@@ -180,7 +180,7 @@ func (b *BirdAdapter) syncTweets(commsDB *sql.DB, tweets []BirdTweet, interactio
 		sourceID := fmt.Sprintf("%s:%s", interactionType, tweet.ID)
 		eventID := uuid.New().String()
 
-		_, err := commsDB.Exec(`
+		_, err := cortexDB.Exec(`
 			INSERT INTO events (
 				id, timestamp, channel, content_types, content,
 				direction, thread_id, reply_to, source_adapter, source_id
@@ -197,14 +197,14 @@ func (b *BirdAdapter) syncTweets(commsDB *sql.DB, tweets []BirdTweet, interactio
 
 		// Check if this was an insert
 		var existingEventID string
-		row := commsDB.QueryRow("SELECT id FROM events WHERE source_adapter = ? AND source_id = ?", b.Name(), sourceID)
+		row := cortexDB.QueryRow("SELECT id FROM events WHERE source_adapter = ? AND source_id = ?", b.Name(), sourceID)
 		if err := row.Scan(&existingEventID); err == nil && existingEventID == eventID {
 			eventsCreated++
 		}
 
 		// Create person for author
 		if tweet.Author.Username != "" {
-			personID, created, err := b.getOrCreatePersonByHandle(commsDB, tweet.Author.Username, tweet.Author.Name)
+			personID, created, err := b.getOrCreatePersonByHandle(cortexDB, tweet.Author.Username, tweet.Author.Name)
 			if err != nil {
 				return eventsCreated, personsCreated, fmt.Errorf("failed to create person: %w", err)
 			}
@@ -213,7 +213,7 @@ func (b *BirdAdapter) syncTweets(commsDB *sql.DB, tweets []BirdTweet, interactio
 			}
 
 			// Add as sender
-			_, err = commsDB.Exec(`
+			_, err = cortexDB.Exec(`
 				INSERT INTO event_participants (event_id, person_id, role)
 				VALUES (?, ?, ?)
 				ON CONFLICT(event_id, person_id, role) DO NOTHING
@@ -227,12 +227,12 @@ func (b *BirdAdapter) syncTweets(commsDB *sql.DB, tweets []BirdTweet, interactio
 	return eventsCreated, personsCreated, nil
 }
 
-func (b *BirdAdapter) getOrCreatePersonByHandle(commsDB *sql.DB, handle, displayName string) (string, bool, error) {
+func (b *BirdAdapter) getOrCreatePersonByHandle(cortexDB *sql.DB, handle, displayName string) (string, bool, error) {
 	handle = "@" + handle
 
 	// Try to find existing person by X handle
 	var personID string
-	row := commsDB.QueryRow(`
+	row := cortexDB.QueryRow(`
 		SELECT person_id FROM identities
 		WHERE channel = 'x' AND identifier = ?
 	`, handle)
@@ -251,7 +251,7 @@ func (b *BirdAdapter) getOrCreatePersonByHandle(commsDB *sql.DB, handle, display
 		canonicalName = handle
 	}
 
-	_, err := commsDB.Exec(`
+	_, err := cortexDB.Exec(`
 		INSERT INTO persons (id, canonical_name, display_name, is_me, created_at, updated_at)
 		VALUES (?, ?, ?, 0, ?, ?)
 	`, personID, canonicalName, displayName, now, now)
@@ -261,7 +261,7 @@ func (b *BirdAdapter) getOrCreatePersonByHandle(commsDB *sql.DB, handle, display
 
 	// Create identity
 	identityID := uuid.New().String()
-	_, err = commsDB.Exec(`
+	_, err = cortexDB.Exec(`
 		INSERT INTO identities (id, person_id, channel, identifier, created_at)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(channel, identifier) DO NOTHING

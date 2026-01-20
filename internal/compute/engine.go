@@ -2,7 +2,9 @@ package compute
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -11,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Napageneral/comms/internal/gemini"
+	"github.com/Napageneral/cortex/internal/gemini"
 	"github.com/Napageneral/taskengine/engine"
 	"github.com/Napageneral/taskengine/queue"
 	"github.com/google/uuid"
@@ -22,7 +24,7 @@ const (
 	JobTypeEmbedding = "embedding"
 )
 
-// Engine wraps the taskengine with comms-specific handlers and adaptive control
+// Engine wraps the taskengine with cortex-specific handlers and adaptive control
 type Engine struct {
 	db           *sql.DB
 	geminiClient *gemini.Client
@@ -44,10 +46,10 @@ type Engine struct {
 	// Embedding batcher for high-throughput batch API calls
 	embeddingBatcher *EmbeddingsBatcher
 
-	// Pre-encoded conversation cache for high-throughput bulk processing
-	// Maps conversation_id -> encoded text
-	convTextCache   map[string]string
-	convTextCacheMu sync.RWMutex
+	// Pre-encoded segment cache for high-throughput bulk processing
+	// Maps segment_id -> encoded text
+	segmentTextCache   map[string]string
+	segmentTextCacheMu sync.RWMutex
 }
 
 // Config for the compute engine
@@ -74,7 +76,7 @@ func DefaultConfig() Config {
 		// 50 workers to match ChatStats ThreadPoolExecutor(max_workers=50)
 		// With Tier-3 Gemini keys, this saturates the API nicely
 		WorkerCount: 50,
-		// Comms defaults (per project policy):
+		// Cortex defaults (per project policy):
 		// - Analysis: Gemini 3 Flash Preview
 		// - Embeddings: Gemini Embedding 001
 		AnalysisModel:      "gemini-3-flash-preview",
@@ -88,7 +90,7 @@ func DefaultConfig() Config {
 	}
 }
 
-// NewEngine creates a compute engine for comms with adaptive control
+// NewEngine creates a compute engine for cortex with adaptive control
 func NewEngine(db *sql.DB, geminiClient *gemini.Client, cfg Config) (*Engine, error) {
 	// Initialize the job queue schema
 	if err := queue.Init(db); err != nil {
@@ -99,7 +101,7 @@ func NewEngine(db *sql.DB, geminiClient *gemini.Client, cfg Config) (*Engine, er
 
 	engineCfg := engine.DefaultConfig()
 	engineCfg.WorkerCount = cfg.WorkerCount
-	engineCfg.LeaseOwner = "comms-compute"
+	engineCfg.LeaseOwner = "cortex-compute"
 
 	e := &Engine{
 		db:             db,
@@ -264,28 +266,28 @@ func (e *Engine) EffectiveRPM() (analysisRPM, embedRPM int) {
 	return
 }
 
-// PreloadConversations pre-encodes all conversation texts into memory cache.
+// PreloadSegments pre-encodes all segment texts into memory cache.
 // This eliminates per-job DB reads during bulk processing, matching ChatStats'
 // pre-encoding strategy for maximum throughput.
 // Call this before Run() for best results with large batches.
-func (e *Engine) PreloadConversations(ctx context.Context) (int, error) {
-	log.Printf("[preload] Starting conversation pre-encoding...")
+func (e *Engine) PreloadSegments(ctx context.Context) (int, error) {
+	log.Printf("[preload] Starting segment pre-encoding...")
 	start := time.Now()
 
-	// Get all conversation IDs
-	rows, err := e.db.QueryContext(ctx, `SELECT id FROM conversations`)
+	// Get all segment IDs
+	rows, err := e.db.QueryContext(ctx, `SELECT id FROM segments`)
 	if err != nil {
-		return 0, fmt.Errorf("query conversations: %w", err)
+		return 0, fmt.Errorf("query segments: %w", err)
 	}
 
-	var convIDs []string
+	var segmentIDs []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			rows.Close()
 			return 0, err
 		}
-		convIDs = append(convIDs, id)
+		segmentIDs = append(segmentIDs, id)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -293,48 +295,48 @@ func (e *Engine) PreloadConversations(ctx context.Context) (int, error) {
 	}
 	rows.Close()
 
-	if len(convIDs) == 0 {
+	if len(segmentIDs) == 0 {
 		return 0, nil
 	}
 
-	// Pre-encode all conversations
-	cache := make(map[string]string, len(convIDs))
-	for _, convID := range convIDs {
-		text, err := e.buildConversationText(ctx, convID)
+	// Pre-encode all segments
+	cache := make(map[string]string, len(segmentIDs))
+	for _, segmentID := range segmentIDs {
+		text, err := e.buildSegmentText(ctx, segmentID)
 		if err != nil {
-			log.Printf("[preload] Warning: failed to encode conversation %s: %v", convID, err)
+			log.Printf("[preload] Warning: failed to encode segment %s: %v", segmentID, err)
 			continue
 		}
-		cache[convID] = text
+		cache[segmentID] = text
 	}
 
 	// Swap in the cache atomically
-	e.convTextCacheMu.Lock()
-	e.convTextCache = cache
-	e.convTextCacheMu.Unlock()
+	e.segmentTextCacheMu.Lock()
+	e.segmentTextCache = cache
+	e.segmentTextCacheMu.Unlock()
 
 	elapsed := time.Since(start)
-	log.Printf("[preload] Pre-encoded %d conversations in %v (%.1f/sec)",
+	log.Printf("[preload] Pre-encoded %d segments in %v (%.1f/sec)",
 		len(cache), elapsed, float64(len(cache))/elapsed.Seconds())
 
 	return len(cache), nil
 }
 
-// ClearConversationCache clears the pre-encoded conversation cache
-func (e *Engine) ClearConversationCache() {
-	e.convTextCacheMu.Lock()
-	e.convTextCache = nil
-	e.convTextCacheMu.Unlock()
+// ClearSegmentCache clears the pre-encoded segment cache
+func (e *Engine) ClearSegmentCache() {
+	e.segmentTextCacheMu.Lock()
+	e.segmentTextCache = nil
+	e.segmentTextCacheMu.Unlock()
 }
 
-// getConversationTextCached returns cached conversation text if available
-func (e *Engine) getConversationTextCached(convID string) (string, bool) {
-	e.convTextCacheMu.RLock()
-	defer e.convTextCacheMu.RUnlock()
-	if e.convTextCache == nil {
+// getSegmentTextCached returns cached segment text if available
+func (e *Engine) getSegmentTextCached(segmentID string) (string, bool) {
+	e.segmentTextCacheMu.RLock()
+	defer e.segmentTextCacheMu.RUnlock()
+	if e.segmentTextCache == nil {
 		return "", false
 	}
-	text, ok := e.convTextCache[convID]
+	text, ok := e.segmentTextCache[segmentID]
 	return text, ok
 }
 
@@ -343,8 +345,8 @@ func (e *Engine) QueueStats() (*queue.Stats, error) {
 	return e.queue.GetStats()
 }
 
-// EnqueueAnalysis queues analysis jobs for all un-analyzed conversations
-func (e *Engine) EnqueueAnalysis(ctx context.Context, analysisTypeName string, conversationIDs ...string) (int, error) {
+// EnqueueAnalysis queues analysis jobs for all un-analyzed segments
+func (e *Engine) EnqueueAnalysis(ctx context.Context, analysisTypeName string, segmentIDs ...string) (int, error) {
 	// Get the analysis type
 	var analysisTypeID string
 	err := e.db.QueryRowContext(ctx, `
@@ -354,33 +356,33 @@ func (e *Engine) EnqueueAnalysis(ctx context.Context, analysisTypeName string, c
 		return 0, fmt.Errorf("analysis type not found: %w", err)
 	}
 
-	var convIDs []string
+	var segIDs []string
 
-	// If specific conversation IDs provided, use those (already filtered by caller)
-	if len(conversationIDs) > 0 {
-		convIDs = conversationIDs
+	// If specific segment IDs provided, use those (already filtered by caller)
+	if len(segmentIDs) > 0 {
+		segIDs = segmentIDs
 	} else {
-		// Find conversations without analysis runs for this type
+		// Find segments without analysis runs for this type
 		// Collect all IDs first, then close rows before enqueueing (SQLite deadlock avoidance)
 		rows, err := e.db.QueryContext(ctx, `
-			SELECT c.id FROM conversations c
+			SELECT s.id FROM segments s
 			WHERE NOT EXISTS (
 				SELECT 1 FROM analysis_runs ar
-				WHERE ar.conversation_id = c.id
+				WHERE ar.segment_id = s.id
 				AND ar.analysis_type_id = ?
 			)
 		`, analysisTypeID)
 		if err != nil {
-			return 0, fmt.Errorf("query conversations: %w", err)
+			return 0, fmt.Errorf("query segments: %w", err)
 		}
 
 		for rows.Next() {
-			var convID string
-			if err := rows.Scan(&convID); err != nil {
+			var segID string
+			if err := rows.Scan(&segID); err != nil {
 				rows.Close()
 				return 0, err
 			}
-			convIDs = append(convIDs, convID)
+			segIDs = append(segIDs, segID)
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
@@ -391,18 +393,18 @@ func (e *Engine) EnqueueAnalysis(ctx context.Context, analysisTypeName string, c
 
 	// Now enqueue (rows is closed, no deadlock)
 	count := 0
-	for _, convID := range convIDs {
+	for _, segID := range segIDs {
 		payload := AnalysisJobPayload{
-			ConversationID: convID,
+			SegmentID:      segID,
 			AnalysisTypeID: analysisTypeID,
 		}
 
 		if err := e.queue.Enqueue(queue.EnqueueOptions{
 			Type:    JobTypeAnalysis,
-			Key:     fmt.Sprintf("analysis:%s:%s", analysisTypeID, convID),
+			Key:     fmt.Sprintf("analysis:%s:%s", analysisTypeID, segID),
 			Payload: payload,
 		}); err != nil {
-			log.Printf("failed to enqueue analysis for %s: %v", convID, err)
+			log.Printf("failed to enqueue analysis for %s: %v", segID, err)
 			continue
 		}
 		count++
@@ -411,30 +413,30 @@ func (e *Engine) EnqueueAnalysis(ctx context.Context, analysisTypeName string, c
 	return count, nil
 }
 
-// EnqueueEmbeddings queues embedding jobs for all un-embedded conversations
+// EnqueueEmbeddings queues embedding jobs for all un-embedded segments
 func (e *Engine) EnqueueEmbeddings(ctx context.Context) (int, error) {
-	// Find conversations without embeddings
+	// Find segments without embeddings
 	// Collect IDs first, close rows, then enqueue (SQLite deadlock avoidance)
 	rows, err := e.db.QueryContext(ctx, `
-		SELECT c.id FROM conversations c
+		SELECT s.id FROM segments s
 		WHERE NOT EXISTS (
 			SELECT 1 FROM embeddings em
-			WHERE em.entity_type = 'conversation'
-			AND em.entity_id = c.id
+			WHERE em.entity_type = 'segment'
+			AND em.entity_id = s.id
 		)
 	`)
 	if err != nil {
-		return 0, fmt.Errorf("query conversations: %w", err)
+		return 0, fmt.Errorf("query segments: %w", err)
 	}
 
-	var convIDs []string
+	var segIDs []string
 	for rows.Next() {
-		var convID string
-		if err := rows.Scan(&convID); err != nil {
+		var segID string
+		if err := rows.Scan(&segID); err != nil {
 			rows.Close()
 			return 0, err
 		}
-		convIDs = append(convIDs, convID)
+		segIDs = append(segIDs, segID)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -444,18 +446,18 @@ func (e *Engine) EnqueueEmbeddings(ctx context.Context) (int, error) {
 
 	// Now enqueue (rows is closed, no deadlock)
 	count := 0
-	for _, convID := range convIDs {
+	for _, segID := range segIDs {
 		payload := EmbeddingJobPayload{
-			EntityType: "conversation",
-			EntityID:   convID,
+			EntityType: "segment",
+			EntityID:   segID,
 		}
 
 		if err := e.queue.Enqueue(queue.EnqueueOptions{
 			Type:    JobTypeEmbedding,
-			Key:     fmt.Sprintf("embedding:conversation:%s", convID),
+			Key:     fmt.Sprintf("embedding:segment:%s", segID),
 			Payload: payload,
 		}); err != nil {
-			log.Printf("failed to enqueue embedding for %s: %v", convID, err)
+			log.Printf("failed to enqueue embedding for %s: %v", segID, err)
 			continue
 		}
 		count++
@@ -566,9 +568,64 @@ func (e *Engine) EnqueuePersonEmbeddings(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+// EnqueueDocumentEmbeddings queues embedding jobs for document heads that are missing
+// embeddings or have changed content.
+func (e *Engine) EnqueueDocumentEmbeddings(ctx context.Context) (int, error) {
+	rows, err := e.db.QueryContext(ctx, `
+		SELECT d.doc_key, d.content_hash
+		FROM document_heads d
+		LEFT JOIN embeddings em
+		  ON em.entity_type = 'document'
+		 AND em.entity_id = d.doc_key
+		 AND em.model = ?
+		WHERE em.id IS NULL
+		   OR em.source_text_hash IS NULL
+		   OR em.source_text_hash != d.content_hash
+	`, e.embeddingModel)
+	if err != nil {
+		return 0, fmt.Errorf("query documents: %w", err)
+	}
+
+	var docKeys []string
+	for rows.Next() {
+		var docKey string
+		var contentHash sql.NullString
+		if err := rows.Scan(&docKey, &contentHash); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		docKeys = append(docKeys, docKey)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+
+	count := 0
+	for _, docKey := range docKeys {
+		payload := EmbeddingJobPayload{
+			EntityType: "document",
+			EntityID:   docKey,
+		}
+
+		if err := e.queue.Enqueue(queue.EnqueueOptions{
+			Type:    JobTypeEmbedding,
+			Key:     fmt.Sprintf("embedding:document:%s", docKey),
+			Payload: payload,
+		}); err != nil {
+			log.Printf("failed to enqueue document embedding for %s: %v", docKey, err)
+			continue
+		}
+		count++
+	}
+
+	return count, nil
+}
+
 // AnalysisJobPayload for analysis jobs
 type AnalysisJobPayload struct {
-	ConversationID string `json:"conversation_id"`
+	SegmentID      string `json:"segment_id"`
 	AnalysisTypeID string `json:"analysis_type_id"`
 }
 
@@ -621,37 +678,37 @@ func (e *Engine) handleAnalysisJob(ctx context.Context, job *queue.Job) error {
 	}
 	dbReadDur = time.Since(t0)
 
-	// Build conversation text (check cache first for pre-encoded text)
+	// Build segment text (check cache first for pre-encoded text)
 	t1 := time.Now()
-	var convText string
+	var segText string
 	if analysisTypeName == "pii_extraction" {
 		var err error
-		convText, err = e.buildConversationTextMasked(ctx, payload.ConversationID)
+		segText, err = e.buildSegmentTextMasked(ctx, payload.SegmentID)
 		if err != nil {
-			return fmt.Errorf("build conversation text (masked): %w", err)
+			return fmt.Errorf("build segment text (masked): %w", err)
 		}
 	} else {
-		if cached, ok := e.getConversationTextCached(payload.ConversationID); ok {
-			convText = cached
+		if cached, ok := e.getSegmentTextCached(payload.SegmentID); ok {
+			segText = cached
 		} else {
 			var err error
-			convText, err = e.buildConversationText(ctx, payload.ConversationID)
+			segText, err = e.buildSegmentText(ctx, payload.SegmentID)
 			if err != nil {
-				return fmt.Errorf("build conversation text: %w", err)
+				return fmt.Errorf("build segment text: %w", err)
 			}
 		}
 	}
 	textBuildDur = time.Since(t1)
 
 	// Build prompt
-	prompt := strings.ReplaceAll(promptTemplate, "{{{conversation_text}}}", convText)
+	prompt := strings.ReplaceAll(promptTemplate, "{{{segment_text}}}", segText)
 
 	// Check if analysis already exists (idempotency)
 	var existingRunID, existingStatus string
 	err = e.db.QueryRowContext(ctx, `
 		SELECT id, status FROM analysis_runs 
-		WHERE analysis_type_id = ? AND conversation_id = ?
-	`, payload.AnalysisTypeID, payload.ConversationID).Scan(&existingRunID, &existingStatus)
+		WHERE analysis_type_id = ? AND segment_id = ?
+	`, payload.AnalysisTypeID, payload.SegmentID).Scan(&existingRunID, &existingStatus)
 
 	var runID string
 	now := time.Now().Unix()
@@ -676,9 +733,9 @@ func (e *Engine) handleAnalysisJob(ctx context.Context, job *queue.Job) error {
 		// Create new record
 		runID = uuid.New().String()
 		_, err = e.db.ExecContext(ctx, `
-			INSERT INTO analysis_runs (id, analysis_type_id, conversation_id, status, started_at, created_at)
+			INSERT INTO analysis_runs (id, analysis_type_id, segment_id, status, started_at, created_at)
 			VALUES (?, ?, ?, 'running', ?, ?)
-		`, runID, payload.AnalysisTypeID, payload.ConversationID, now, now)
+		`, runID, payload.AnalysisTypeID, payload.SegmentID, now, now)
 		if err != nil {
 			return fmt.Errorf("create analysis run: %w", err)
 		}
@@ -691,9 +748,9 @@ func (e *Engine) handleAnalysisJob(ctx context.Context, job *queue.Job) error {
 		var err error
 		switch analysisTypeName {
 		case "nexus_cli_invocations":
-			outputText, err = e.buildNexusCLIOutput(ctx, payload.ConversationID)
+			outputText, err = e.buildNexusCLIOutput(ctx, payload.SegmentID)
 		case "terminal_invocations":
-			outputText, err = e.buildTerminalInvocationOutput(ctx, payload.ConversationID)
+			outputText, err = e.buildTerminalInvocationOutput(ctx, payload.SegmentID)
 		default:
 			err = fmt.Errorf("unsupported local analysis type: %s", analysisTypeName)
 		}
@@ -708,7 +765,7 @@ func (e *Engine) handleAnalysisJob(ctx context.Context, job *queue.Job) error {
 
 		tWrite := time.Now()
 		if facetsConfigJSON.Valid {
-			if err := e.extractAndPersistFacets(ctx, runID, payload.ConversationID, outputText, facetsConfigJSON.String); err != nil {
+			if err := e.extractAndPersistFacets(ctx, runID, payload.SegmentID, outputText, facetsConfigJSON.String); err != nil {
 				log.Printf("warning: facet extraction failed: %v", err)
 			}
 		}
@@ -791,7 +848,7 @@ func (e *Engine) handleAnalysisJob(ctx context.Context, job *queue.Job) error {
 	// Persist results
 	t4 := time.Now()
 	if outputType == "structured" && facetsConfigJSON.Valid {
-		if err := e.extractAndPersistFacets(ctx, runID, payload.ConversationID, outputText, facetsConfigJSON.String); err != nil {
+		if err := e.extractAndPersistFacets(ctx, runID, payload.SegmentID, outputText, facetsConfigJSON.String); err != nil {
 			log.Printf("warning: facet extraction failed: %v", err)
 		}
 	}
@@ -833,21 +890,23 @@ func (e *Engine) handleEmbeddingJob(ctx context.Context, job *queue.Job) error {
 		return fmt.Errorf("parse payload: %w", err)
 	}
 
-	// Get text to embed (check cache first for conversations)
+	// Get text to embed (check cache first for segments)
 	t0 := time.Now()
 	var text string
 	var err error
 	switch payload.EntityType {
-	case "conversation":
-		if cached, ok := e.getConversationTextCached(payload.EntityID); ok {
+	case "segment":
+		if cached, ok := e.getSegmentTextCached(payload.EntityID); ok {
 			text = cached
 		} else {
-			text, err = e.buildConversationText(ctx, payload.EntityID)
+			text, err = e.buildSegmentText(ctx, payload.EntityID)
 		}
 	case "facet":
 		text, err = e.buildFacetText(ctx, payload.EntityID)
 	case "person":
 		text, err = e.buildPersonText(ctx, payload.EntityID)
+	case "document":
+		text, err = e.buildDocumentText(ctx, payload.EntityID)
 	default:
 		return fmt.Errorf("unsupported entity type: %s", payload.EntityType)
 	}
@@ -882,17 +941,21 @@ func (e *Engine) handleEmbeddingJob(ctx context.Context, job *queue.Job) error {
 	now := time.Now().Unix()
 	model := e.embeddingModel
 	dimension := len(embedding)
+	sourceTextHash := hashText(text)
 
 	// Persist using batch writer if available
 	t2 := time.Now()
 	apply := func(tx *sql.Tx) error {
 		_, err := tx.Exec(`
-			INSERT INTO embeddings (id, entity_type, entity_id, model, embedding_blob, dimension, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO embeddings (
+				id, entity_type, entity_id, model,
+				embedding_blob, dimension, source_text_hash, created_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(entity_type, entity_id, model) DO UPDATE SET
 				embedding_blob = excluded.embedding_blob,
-				dimension = excluded.dimension
-		`, embID, payload.EntityType, payload.EntityID, model, blob, dimension, now)
+				dimension = excluded.dimension,
+				source_text_hash = excluded.source_text_hash
+		`, embID, payload.EntityType, payload.EntityID, model, blob, dimension, sourceTextHash, now)
 		return err
 	}
 
@@ -920,10 +983,10 @@ func (e *Engine) handleEmbeddingJob(ctx context.Context, job *queue.Job) error {
 	return writeErr
 }
 
-// buildConversationText builds text representation of a conversation
+// buildSegmentText builds text representation of a segment
 // Format matches Eve's encoding: "Name: message text [Image] [Attachment: file.pdf]"
 // Attachments are encoded as [Image], [Video], [Audio], [Sticker], or [Attachment: filename]
-func (e *Engine) buildConversationText(ctx context.Context, convID string) (string, error) {
+func (e *Engine) buildSegmentText(ctx context.Context, segmentID string) (string, error) {
 	// Query events with aggregated attachment info
 	rows, err := e.db.QueryContext(ctx, `
 		SELECT 
@@ -944,13 +1007,13 @@ func (e *Engine) buildConversationText(ctx context.Context, convID string) (stri
 				)
 				FROM attachments a WHERE a.event_id = e.id
 			) as attachments
-		FROM conversation_events ce
-		JOIN events e ON ce.event_id = e.id
+		FROM segment_events se
+		JOIN events e ON se.event_id = e.id
 		LEFT JOIN event_participants ep ON e.id = ep.event_id AND ep.role = 'sender'
 		LEFT JOIN persons p ON ep.person_id = p.id
-		WHERE ce.conversation_id = ?
-		ORDER BY ce.position
-	`, convID)
+		WHERE se.segment_id = ?
+		ORDER BY se.position
+	`, segmentID)
 	if err != nil {
 		return "", err
 	}
@@ -1009,9 +1072,9 @@ func (e *Engine) buildConversationText(ctx context.Context, convID string) (stri
 	return sb.String(), rows.Err()
 }
 
-// buildConversationTextMasked builds text for PII extraction with anonymized speaker labels.
+// buildSegmentTextMasked builds text for PII extraction with anonymized speaker labels.
 // Speaker labels are metadata only (User/ParticipantN) to avoid name leakage.
-func (e *Engine) buildConversationTextMasked(ctx context.Context, convID string) (string, error) {
+func (e *Engine) buildSegmentTextMasked(ctx context.Context, segmentID string) (string, error) {
 	rows, err := e.db.QueryContext(ctx, `
 		SELECT 
 			e.id,
@@ -1032,13 +1095,13 @@ func (e *Engine) buildConversationTextMasked(ctx context.Context, convID string)
 				)
 				FROM attachments a WHERE a.event_id = e.id
 			) as attachments
-		FROM conversation_events ce
-		JOIN events e ON ce.event_id = e.id
+		FROM segment_events se
+		JOIN events e ON se.event_id = e.id
 		LEFT JOIN event_participants ep ON e.id = ep.event_id AND ep.role = 'sender'
 		LEFT JOIN persons p ON ep.person_id = p.id
-		WHERE ce.conversation_id = ?
-		ORDER BY ce.position
-	`, convID)
+		WHERE se.segment_id = ?
+		ORDER BY se.position
+	`, segmentID)
 	if err != nil {
 		return "", err
 	}
@@ -1171,8 +1234,49 @@ func (e *Engine) buildPersonText(ctx context.Context, personID string) (string, 
 	return sb.String(), nil
 }
 
+// buildDocumentText builds text representation of a document head for embedding.
+// Includes title, description, metadata, and full content.
+func (e *Engine) buildDocumentText(ctx context.Context, docKey string) (string, error) {
+	var title, description, metadataJSON, content sql.NullString
+	err := e.db.QueryRowContext(ctx, `
+		SELECT d.title, d.description, d.metadata_json, e.content
+		FROM document_heads d
+		JOIN events e ON d.current_event_id = e.id
+		WHERE d.doc_key = ?
+	`, docKey).Scan(&title, &description, &metadataJSON, &content)
+	if err != nil {
+		return "", fmt.Errorf("get document: %w", err)
+	}
+
+	var sb strings.Builder
+	sb.WriteString("[DOC_KEY] ")
+	sb.WriteString(docKey)
+	sb.WriteString("\n")
+	if title.Valid && strings.TrimSpace(title.String) != "" {
+		sb.WriteString("[TITLE] ")
+		sb.WriteString(strings.TrimSpace(title.String))
+		sb.WriteString("\n")
+	}
+	if description.Valid && strings.TrimSpace(description.String) != "" {
+		sb.WriteString("[DESCRIPTION] ")
+		sb.WriteString(strings.TrimSpace(description.String))
+		sb.WriteString("\n")
+	}
+	if metadataJSON.Valid && strings.TrimSpace(metadataJSON.String) != "" {
+		sb.WriteString("[METADATA] ")
+		sb.WriteString(strings.TrimSpace(metadataJSON.String))
+		sb.WriteString("\n")
+	}
+	if content.Valid && strings.TrimSpace(content.String) != "" {
+		sb.WriteString("[CONTENT]\n")
+		sb.WriteString(strings.TrimSpace(content.String))
+	}
+
+	return sb.String(), nil
+}
+
 // extractAndPersistFacets parses structured output and saves facets
-func (e *Engine) extractAndPersistFacets(ctx context.Context, runID, convID, outputText, facetsConfig string) error {
+func (e *Engine) extractAndPersistFacets(ctx context.Context, runID, segmentID, outputText, facetsConfig string) error {
 	// Parse the JSON output (object or array)
 	jsonText := extractJSON(outputText)
 	if jsonText == "" {
@@ -1243,9 +1347,9 @@ func (e *Engine) extractAndPersistFacets(ctx context.Context, runID, convID, out
 	apply := func(tx *sql.Tx) error {
 		for _, f := range facets {
 			_, err := tx.Exec(`
-				INSERT INTO facets (id, analysis_run_id, conversation_id, facet_type, value, created_at)
+				INSERT INTO facets (id, analysis_run_id, segment_id, facet_type, value, created_at)
 				VALUES (?, ?, ?, ?, ?, ?)
-			`, f.id, runID, convID, f.facetType, f.value, now)
+			`, f.id, runID, segmentID, f.facetType, f.value, now)
 			if err != nil {
 				log.Printf("insert facet error: %v", err)
 			}
@@ -1377,12 +1481,17 @@ func float64SliceToBlob(values []float64) []byte {
 	return blob
 }
 
+func hashText(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:])
+}
+
 // getResponseSchema returns the Gemini response schema for known analysis types
 // This enforces JSON structure at the API level for more reliable output parsing
 func getResponseSchema(analysisTypeName string) any {
 	switch analysisTypeName {
 	case "convo-all-v1":
-		// Schema for conversation analysis: summary, entities, topics, emotions, humor
+		// Schema for segment analysis: summary, entities, topics, emotions, humor
 		return map[string]any{
 			"type": "object",
 			"properties": map[string]any{

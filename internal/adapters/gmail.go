@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"encoding/base64"
-	"github.com/Napageneral/comms/internal/bus"
-	"github.com/Napageneral/comms/internal/state"
+	"github.com/Napageneral/cortex/internal/bus"
+	"github.com/Napageneral/cortex/internal/state"
 	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 )
@@ -176,17 +176,17 @@ func (g *GmailAdapter) setHistoryID(db *sql.DB, historyID int64) {
 	_ = state.Set(db, g.Name(), "gmail_history_id", fmt.Sprintf("%d", historyID))
 }
 
-func (g *GmailAdapter) syncGmailStateAndTags(commsDB *sql.DB, eventID string, labelIDs []string, direction string) error {
+func (g *GmailAdapter) syncGmailStateAndTags(cortexDB *sql.DB, eventID string, labelIDs []string, direction string) error {
 	now := time.Now().Unix()
 
 	// Replace current gmail tags for this event.
-	_, _ = commsDB.Exec(`DELETE FROM event_tags WHERE event_id = ? AND source = 'gmail'`, eventID)
+	_, _ = cortexDB.Exec(`DELETE FROM event_tags WHERE event_id = ? AND source = 'gmail'`, eventID)
 	for _, l := range labelIDs {
 		l = strings.TrimSpace(l)
 		if l == "" {
 			continue
 		}
-		_, _ = commsDB.Exec(`
+		_, _ = cortexDB.Exec(`
 			INSERT INTO event_tags (event_id, tag, source, created_at)
 			VALUES (?, ?, 'gmail', ?)
 			ON CONFLICT(event_id, tag, source) DO NOTHING
@@ -225,7 +225,7 @@ func (g *GmailAdapter) syncGmailStateAndTags(commsDB *sql.DB, eventID string, la
 		}
 	}
 
-	_, err := commsDB.Exec(`
+	_, err := cortexDB.Exec(`
 		INSERT INTO event_state (event_id, read_state, flagged, archived, status, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(event_id) DO UPDATE SET
@@ -241,15 +241,15 @@ func (g *GmailAdapter) syncGmailStateAndTags(commsDB *sql.DB, eventID string, la
 	return nil
 }
 
-func (g *GmailAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (SyncResult, error) {
+func (g *GmailAdapter) Sync(ctx context.Context, cortexDB *sql.DB, full bool) (SyncResult, error) {
 	startTime := time.Now()
 	result := SyncResult{Perf: map[string]string{}}
 
-	// Enable foreign keys on comms DB
-	if _, err := commsDB.Exec("PRAGMA foreign_keys = ON"); err != nil {
+	// Enable foreign keys on cortex DB
+	if _, err := cortexDB.Exec("PRAGMA foreign_keys = ON"); err != nil {
 		return result, fmt.Errorf("failed to enable foreign keys: %w", err)
 	}
-	if err := g.ensureGmailStateTables(commsDB); err != nil {
+	if err := g.ensureGmailStateTables(cortexDB); err != nil {
 		return result, err
 	}
 
@@ -257,7 +257,7 @@ func (g *GmailAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sy
 	tWM := time.Now()
 	var lastSyncTimestamp int64
 	var lastEventID sql.NullString
-	row := commsDB.QueryRow("SELECT last_sync_at, last_event_id FROM sync_watermarks WHERE adapter = ?", g.Name())
+	row := cortexDB.QueryRow("SELECT last_sync_at, last_event_id FROM sync_watermarks WHERE adapter = ?", g.Name())
 	if err := row.Scan(&lastSyncTimestamp, &lastEventID); err != nil && err != sql.ErrNoRows {
 		return result, fmt.Errorf("failed to get sync watermark: %w", err)
 	}
@@ -300,13 +300,13 @@ func (g *GmailAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sy
 
 		// Recent-first: fetch last ~3 months quickly (month boundary avoids gaps).
 		recentQuery := fmt.Sprintf("in:anywhere -in:spam -in:trash after:%s", recentMonth.Format("2006/01/02"))
-		g.updateJobProgress(commsDB, "recent", "", map[string]any{
+		g.updateJobProgress(cortexDB, "recent", "", map[string]any{
 			"recent": map[string]any{
 				"after": recentMonth.Format("2006-01-02"),
 			},
 		})
-		eventsCreated, eventsUpdated, personsCreated, maxHist, err := g.syncQuery(ctx, commsDB, recentQuery, personCache, func(done, total int) {
-			g.updateJobProgress(commsDB, "recent", "", map[string]any{
+		eventsCreated, eventsUpdated, personsCreated, maxHist, err := g.syncQuery(ctx, cortexDB, recentQuery, personCache, func(done, total int) {
+			g.updateJobProgress(cortexDB, "recent", "", map[string]any{
 				"threads": map[string]any{
 					"done":  done,
 					"total": total,
@@ -316,7 +316,7 @@ func (g *GmailAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sy
 		if err != nil {
 			return result, err
 		}
-		g.setHistoryID(commsDB, maxHist)
+		g.setHistoryID(cortexDB, maxHist)
 		result.EventsCreated += eventsCreated
 		result.EventsUpdated += eventsUpdated
 		result.PersonsCreated += personsCreated
@@ -339,7 +339,7 @@ func (g *GmailAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sy
 			tMonth := time.Now()
 			monthLabel := monthStart.Format("2006-01")
 			nextCursor := monthEnd.Format("2006-01-02")
-			g.updateJobProgress(commsDB, "backfill", "backfill:"+nextCursor, map[string]any{
+			g.updateJobProgress(cortexDB, "backfill", "backfill:"+nextCursor, map[string]any{
 				"backfill": map[string]any{
 					"current_window": monthLabel,
 					"windows_done":   backfillWindows,
@@ -348,13 +348,13 @@ func (g *GmailAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sy
 			})
 
 			var lastProgressWrite time.Time
-			eventsCreated, eventsUpdated, personsCreated, maxHist, err := g.syncQuery(ctx, commsDB, query, personCache, func(done, total int) {
+			eventsCreated, eventsUpdated, personsCreated, maxHist, err := g.syncQuery(ctx, cortexDB, query, personCache, func(done, total int) {
 				// Rate-limit DB writes.
 				if time.Since(lastProgressWrite) < 2*time.Second {
 					return
 				}
 				lastProgressWrite = time.Now()
-				g.updateJobProgress(commsDB, "backfill", "backfill:"+nextCursor, map[string]any{
+				g.updateJobProgress(cortexDB, "backfill", "backfill:"+nextCursor, map[string]any{
 					"backfill": map[string]any{
 						"current_window": monthLabel,
 						"windows_done":   backfillWindows,
@@ -369,7 +369,7 @@ func (g *GmailAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sy
 			if err != nil {
 				return result, err
 			}
-			g.setHistoryID(commsDB, maxHist)
+			g.setHistoryID(cortexDB, maxHist)
 			dur := time.Since(tMonth)
 			backfillWindows++
 			backfillTotal += dur
@@ -380,7 +380,7 @@ func (g *GmailAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sy
 			result.PersonsCreated += personsCreated
 
 			// Persist backfill cursor after each month.
-			if err := g.upsertWatermark(commsDB, time.Now().Unix(), "backfill:"+nextCursor); err != nil {
+			if err := g.upsertWatermark(cortexDB, time.Now().Unix(), "backfill:"+nextCursor); err != nil {
 				return result, err
 			}
 
@@ -395,7 +395,7 @@ func (g *GmailAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sy
 				if eta >= 4*time.Hour {
 					hint := "Backfill ETA is >4h. For a faster initial bulk snapshot, use Google Takeout (takeout.google.com) and import the MBOX."
 					result.Perf["hint_takeout"] = hint
-					g.updateJobProgress(commsDB, "backfill", "backfill:"+nextCursor, map[string]any{
+					g.updateJobProgress(cortexDB, "backfill", "backfill:"+nextCursor, map[string]any{
 						"eta_seconds":  int64(eta.Seconds()),
 						"hint_takeout": hint,
 						"backfill": map[string]any{
@@ -419,24 +419,24 @@ func (g *GmailAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sy
 
 		// Clear backfill cursor; future runs will be incremental.
 		nowUnix := time.Now().Unix()
-		if err := g.upsertWatermark(commsDB, nowUnix, ""); err != nil {
+		if err := g.upsertWatermark(cortexDB, nowUnix, ""); err != nil {
 			return result, err
 		}
 	} else {
 		// Prefer History API when we have a baseline. This catches up label changes/deletes
 		// even if the machine was off, and avoids re-scanning huge time ranges.
 		usedHistory := false
-		if since, ok := g.getHistoryID(commsDB); ok {
+		if since, ok := g.getHistoryID(cortexDB); ok {
 			tHist := time.Now()
-			g.updateJobProgress(commsDB, "history", fmt.Sprintf("%d", since), map[string]any{
+			g.updateJobProgress(cortexDB, "history", fmt.Sprintf("%d", since), map[string]any{
 				"history": map[string]any{
 					"since": since,
 				},
 			})
-			eventsCreated, eventsUpdated, personsCreated, newHist, err := g.syncHistory(ctx, commsDB, since, personCache)
+			eventsCreated, eventsUpdated, personsCreated, newHist, err := g.syncHistory(ctx, cortexDB, since, personCache)
 			if err == nil {
 				usedHistory = true
-				g.setHistoryID(commsDB, newHist)
+				g.setHistoryID(cortexDB, newHist)
 				result.Perf["incremental_sync_history"] = time.Since(tHist).String()
 				result.EventsCreated += eventsCreated
 				result.EventsUpdated += eventsUpdated
@@ -454,18 +454,18 @@ func (g *GmailAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sy
 				searchQuery = fmt.Sprintf("in:anywhere -in:spam -in:trash after:%s", lastSyncDate)
 			}
 			tInc := time.Now()
-			g.updateJobProgress(commsDB, "incremental", "", map[string]any{
+			g.updateJobProgress(cortexDB, "incremental", "", map[string]any{
 				"incremental": map[string]any{
 					"query": searchQuery,
 				},
 			})
 			var lastProgressWrite time.Time
-			eventsCreated, eventsUpdated, personsCreated, maxHist, err := g.syncQuery(ctx, commsDB, searchQuery, personCache, func(done, total int) {
+			eventsCreated, eventsUpdated, personsCreated, maxHist, err := g.syncQuery(ctx, cortexDB, searchQuery, personCache, func(done, total int) {
 				if time.Since(lastProgressWrite) < 2*time.Second {
 					return
 				}
 				lastProgressWrite = time.Now()
-				g.updateJobProgress(commsDB, "incremental", "", map[string]any{
+				g.updateJobProgress(cortexDB, "incremental", "", map[string]any{
 					"threads": map[string]any{
 						"done":  done,
 						"total": total,
@@ -475,7 +475,7 @@ func (g *GmailAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sy
 			if err != nil {
 				return result, err
 			}
-			g.setHistoryID(commsDB, maxHist)
+			g.setHistoryID(cortexDB, maxHist)
 			result.Perf["incremental_sync_query"] = time.Since(tInc).String()
 			result.EventsCreated += eventsCreated
 			result.EventsUpdated += eventsUpdated
@@ -483,7 +483,7 @@ func (g *GmailAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sy
 		}
 
 		nowUnix := time.Now().Unix()
-		if err := g.upsertWatermark(commsDB, nowUnix, lastEventID.String); err != nil {
+		if err := g.upsertWatermark(cortexDB, nowUnix, lastEventID.String); err != nil {
 			return result, err
 		}
 	}
@@ -727,7 +727,7 @@ func (g *GmailAdapter) fetchMessageWithRetry(ctx context.Context, messageID stri
 }
 
 // syncQuery searches threads for query, fetches each thread, and upserts all messages.
-func (g *GmailAdapter) syncQuery(ctx context.Context, commsDB *sql.DB, query string, cache *emailPersonCache, onProgress func(done, total int)) (int, int, int, int64, error) {
+func (g *GmailAdapter) syncQuery(ctx context.Context, cortexDB *sql.DB, query string, cache *emailPersonCache, onProgress func(done, total int)) (int, int, int, int64, error) {
 	start := time.Now()
 	tSearch := time.Now()
 	threadIDs, err := g.fetchThreadIDs(ctx, query)
@@ -781,7 +781,7 @@ func (g *GmailAdapter) syncQuery(ctx context.Context, commsDB *sql.DB, query str
 					continue
 				}
 
-				created, updated, persons, maxHist, err := g.syncThread(ctx, commsDB, thread, cache)
+				created, updated, persons, maxHist, err := g.syncThread(ctx, cortexDB, thread, cache)
 				if err != nil {
 					fmt.Printf("Warning: failed to sync thread %s: %v\n", threadID, err)
 					results <- threadResult{}
@@ -836,8 +836,8 @@ func (g *GmailAdapter) syncQuery(ctx context.Context, commsDB *sql.DB, query str
 	return eventsCreated, eventsUpdated, personsCreated, maxHistory, nil
 }
 
-// syncThread syncs a single Gmail thread into the comms database
-func (g *GmailAdapter) syncThread(ctx context.Context, commsDB *sql.DB, thread GmailThread, cache *emailPersonCache) (int, int, int, int64, error) {
+// syncThread syncs a single Gmail thread into the cortex database
+func (g *GmailAdapter) syncThread(ctx context.Context, cortexDB *sql.DB, thread GmailThread, cache *emailPersonCache) (int, int, int, int64, error) {
 	eventsCreated := 0
 	eventsUpdated := 0
 	personsCreated := 0
@@ -895,7 +895,7 @@ func (g *GmailAdapter) syncThread(ctx context.Context, commsDB *sql.DB, thread G
 
 		// Upsert event with deterministic ID (no UUID churn).
 		eventID := fmt.Sprintf("%s:%s", g.Name(), message.ID)
-		created, updated, err := g.upsertEvent(commsDB, eventID, timestamp, string(contentTypesJSON), content, direction, thread.ID, message.ID)
+		created, updated, err := g.upsertEvent(cortexDB, eventID, timestamp, string(contentTypesJSON), content, direction, thread.ID, message.ID)
 		if err != nil {
 			return eventsCreated, eventsUpdated, personsCreated, maxHistory, err
 		}
@@ -906,13 +906,13 @@ func (g *GmailAdapter) syncThread(ctx context.Context, commsDB *sql.DB, thread G
 		}
 
 		// Process participants
-		participantsCreated, err := g.syncParticipants(commsDB, eventID, from, to, cc, direction, cache)
+		participantsCreated, err := g.syncParticipants(cortexDB, eventID, from, to, cc, direction, cache)
 		if err != nil {
 			return eventsCreated, eventsUpdated, personsCreated, maxHistory, fmt.Errorf("failed to sync participants: %w", err)
 		}
 		personsCreated += participantsCreated
 
-		if err := g.syncGmailStateAndTags(commsDB, eventID, message.LabelIDs, direction); err != nil {
+		if err := g.syncGmailStateAndTags(cortexDB, eventID, message.LabelIDs, direction); err != nil {
 			return eventsCreated, eventsUpdated, personsCreated, maxHistory, err
 		}
 	}
@@ -920,7 +920,7 @@ func (g *GmailAdapter) syncThread(ctx context.Context, commsDB *sql.DB, thread G
 	return eventsCreated, eventsUpdated, personsCreated, maxHistory, nil
 }
 
-func (g *GmailAdapter) syncHistory(ctx context.Context, commsDB *sql.DB, since int64, cache *emailPersonCache) (int, int, int, int64, error) {
+func (g *GmailAdapter) syncHistory(ctx context.Context, cortexDB *sql.DB, since int64, cache *emailPersonCache) (int, int, int, int64, error) {
 	start := time.Now()
 	pageToken := ""
 	newHistory := since
@@ -984,7 +984,7 @@ func (g *GmailAdapter) syncHistory(ctx context.Context, commsDB *sql.DB, since i
 							fmt.Printf("Warning: failed to fetch message %s: %v\n", mid, err)
 							continue
 						}
-						created, updated, persons, err := g.syncMessage(ctx, commsDB, msg, cache)
+						created, updated, persons, err := g.syncMessage(ctx, cortexDB, msg, cache)
 						if err != nil {
 							fmt.Printf("Warning: failed to sync message %s: %v\n", mid, err)
 							continue
@@ -1020,7 +1020,7 @@ func (g *GmailAdapter) syncHistory(ctx context.Context, commsDB *sql.DB, since i
 	return eventsCreated, eventsUpdated, personsCreated, newHistory, nil
 }
 
-func (g *GmailAdapter) syncMessage(ctx context.Context, commsDB *sql.DB, message GmailMessage, cache *emailPersonCache) (int, int, int, error) {
+func (g *GmailAdapter) syncMessage(ctx context.Context, cortexDB *sql.DB, message GmailMessage, cache *emailPersonCache) (int, int, int, error) {
 	eventsCreated := 0
 	eventsUpdated := 0
 	personsCreated := 0
@@ -1073,7 +1073,7 @@ func (g *GmailAdapter) syncMessage(ctx context.Context, commsDB *sql.DB, message
 	}
 
 	eventID := fmt.Sprintf("%s:%s", g.Name(), message.ID)
-	created, updated, err := g.upsertEvent(commsDB, eventID, timestamp, string(contentTypesJSON), content, direction, threadID, message.ID)
+	created, updated, err := g.upsertEvent(cortexDB, eventID, timestamp, string(contentTypesJSON), content, direction, threadID, message.ID)
 	if err != nil {
 		return eventsCreated, eventsUpdated, personsCreated, err
 	}
@@ -1083,22 +1083,22 @@ func (g *GmailAdapter) syncMessage(ctx context.Context, commsDB *sql.DB, message
 		eventsUpdated++
 	}
 
-	participantsCreated, err := g.syncParticipants(commsDB, eventID, from, to, cc, direction, cache)
+	participantsCreated, err := g.syncParticipants(cortexDB, eventID, from, to, cc, direction, cache)
 	if err != nil {
 		return eventsCreated, eventsUpdated, personsCreated, fmt.Errorf("failed to sync participants: %w", err)
 	}
 	personsCreated += participantsCreated
 
-	if err := g.syncGmailStateAndTags(commsDB, eventID, message.LabelIDs, direction); err != nil {
+	if err := g.syncGmailStateAndTags(cortexDB, eventID, message.LabelIDs, direction); err != nil {
 		return eventsCreated, eventsUpdated, personsCreated, err
 	}
 
 	return eventsCreated, eventsUpdated, personsCreated, nil
 }
 
-func (g *GmailAdapter) upsertEvent(commsDB *sql.DB, eventID string, timestamp int64, contentTypesJSON string, content string, direction string, threadID string, sourceID string) (created bool, updated bool, err error) {
+func (g *GmailAdapter) upsertEvent(cortexDB *sql.DB, eventID string, timestamp int64, contentTypesJSON string, content string, direction string, threadID string, sourceID string) (created bool, updated bool, err error) {
 	// Try insert first.
-	res, err := commsDB.Exec(`
+	res, err := cortexDB.Exec(`
 		INSERT OR IGNORE INTO events (
 			id, timestamp, channel, content_types, content,
 			direction, thread_id, reply_to, source_adapter, source_id
@@ -1108,7 +1108,7 @@ func (g *GmailAdapter) upsertEvent(commsDB *sql.DB, eventID string, timestamp in
 		return false, false, fmt.Errorf("failed to insert event: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
-		_ = bus.Emit(commsDB, "comms.event.created", g.Name(), eventID, map[string]any{
+		_ = bus.Emit(cortexDB, "cortex.event.created", g.Name(), eventID, map[string]any{
 			"channel":        "gmail",
 			"direction":      direction,
 			"timestamp":      timestamp,
@@ -1120,7 +1120,7 @@ func (g *GmailAdapter) upsertEvent(commsDB *sql.DB, eventID string, timestamp in
 	}
 
 	// Already exists: update selectively.
-	res, err = commsDB.Exec(`
+	res, err = cortexDB.Exec(`
 		UPDATE events
 		SET
 			timestamp = ?,
@@ -1134,7 +1134,7 @@ func (g *GmailAdapter) upsertEvent(commsDB *sql.DB, eventID string, timestamp in
 		return false, false, fmt.Errorf("failed to update event: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
-		_ = bus.Emit(commsDB, "comms.event.updated", g.Name(), eventID, map[string]any{
+		_ = bus.Emit(cortexDB, "cortex.event.updated", g.Name(), eventID, map[string]any{
 			"channel":        "gmail",
 			"direction":      direction,
 			"timestamp":      timestamp,
@@ -1185,14 +1185,14 @@ func (g *GmailAdapter) hasAttachments(payload GmailPayload) bool {
 }
 
 // syncParticipants creates persons and identities for email participants
-func (g *GmailAdapter) syncParticipants(commsDB *sql.DB, eventID, from, to, cc, direction string, cache *emailPersonCache) (int, error) {
+func (g *GmailAdapter) syncParticipants(cortexDB *sql.DB, eventID, from, to, cc, direction string, cache *emailPersonCache) (int, error) {
 	personsCreated := 0
 
 	// Parse and add sender
 	if from != "" {
 		fromEmails := parseEmailAddresses(from)
 		for _, email := range fromEmails {
-			personID, created, err := g.getOrCreatePersonByEmail(commsDB, email, cache)
+			personID, created, err := g.getOrCreatePersonByEmail(cortexDB, email, cache)
 			if err != nil {
 				return personsCreated, err
 			}
@@ -1202,7 +1202,7 @@ func (g *GmailAdapter) syncParticipants(commsDB *sql.DB, eventID, from, to, cc, 
 
 			// Add as sender
 			role := "sender"
-			_, err = commsDB.Exec(`
+			_, err = cortexDB.Exec(`
 				INSERT INTO event_participants (event_id, person_id, role)
 				VALUES (?, ?, ?)
 				ON CONFLICT(event_id, person_id, role) DO NOTHING
@@ -1217,7 +1217,7 @@ func (g *GmailAdapter) syncParticipants(commsDB *sql.DB, eventID, from, to, cc, 
 	if to != "" {
 		toEmails := parseEmailAddresses(to)
 		for _, email := range toEmails {
-			personID, created, err := g.getOrCreatePersonByEmail(commsDB, email, cache)
+			personID, created, err := g.getOrCreatePersonByEmail(cortexDB, email, cache)
 			if err != nil {
 				return personsCreated, err
 			}
@@ -1226,7 +1226,7 @@ func (g *GmailAdapter) syncParticipants(commsDB *sql.DB, eventID, from, to, cc, 
 			}
 
 			// Add as recipient
-			_, err = commsDB.Exec(`
+			_, err = cortexDB.Exec(`
 				INSERT INTO event_participants (event_id, person_id, role)
 				VALUES (?, ?, ?)
 				ON CONFLICT(event_id, person_id, role) DO NOTHING
@@ -1241,7 +1241,7 @@ func (g *GmailAdapter) syncParticipants(commsDB *sql.DB, eventID, from, to, cc, 
 	if cc != "" {
 		ccEmails := parseEmailAddresses(cc)
 		for _, email := range ccEmails {
-			personID, created, err := g.getOrCreatePersonByEmail(commsDB, email, cache)
+			personID, created, err := g.getOrCreatePersonByEmail(cortexDB, email, cache)
 			if err != nil {
 				return personsCreated, err
 			}
@@ -1250,7 +1250,7 @@ func (g *GmailAdapter) syncParticipants(commsDB *sql.DB, eventID, from, to, cc, 
 			}
 
 			// Add as CC
-			_, err = commsDB.Exec(`
+			_, err = cortexDB.Exec(`
 				INSERT INTO event_participants (event_id, person_id, role)
 				VALUES (?, ?, ?)
 				ON CONFLICT(event_id, person_id, role) DO NOTHING
@@ -1265,7 +1265,7 @@ func (g *GmailAdapter) syncParticipants(commsDB *sql.DB, eventID, from, to, cc, 
 }
 
 // getOrCreatePersonByEmail finds or creates a person by email address
-func (g *GmailAdapter) getOrCreatePersonByEmail(commsDB *sql.DB, email string, cache *emailPersonCache) (string, bool, error) {
+func (g *GmailAdapter) getOrCreatePersonByEmail(cortexDB *sql.DB, email string, cache *emailPersonCache) (string, bool, error) {
 	email = strings.TrimSpace(strings.ToLower(email))
 	if email == "" {
 		return "", false, fmt.Errorf("empty email address")
@@ -1279,7 +1279,7 @@ func (g *GmailAdapter) getOrCreatePersonByEmail(commsDB *sql.DB, email string, c
 
 	// Try to find existing person by email identity
 	var personID string
-	row := commsDB.QueryRow(`
+	row := cortexDB.QueryRow(`
 		SELECT person_id FROM identities
 		WHERE channel = 'email' AND identifier = ?
 	`, email)
@@ -1297,7 +1297,7 @@ func (g *GmailAdapter) getOrCreatePersonByEmail(commsDB *sql.DB, email string, c
 	now := time.Now().Unix()
 
 	// Use email as canonical name (user can update later with display name)
-	_, err := commsDB.Exec(`
+	_, err := cortexDB.Exec(`
 		INSERT INTO persons (id, canonical_name, is_me, created_at, updated_at)
 		VALUES (?, ?, 0, ?, ?)
 	`, personID, email, now, now)
@@ -1307,7 +1307,7 @@ func (g *GmailAdapter) getOrCreatePersonByEmail(commsDB *sql.DB, email string, c
 
 	// Create identity
 	identityID := uuid.New().String()
-	_, err = commsDB.Exec(`
+	_, err = cortexDB.Exec(`
 		INSERT INTO identities (id, person_id, channel, identifier, created_at)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(channel, identifier) DO NOTHING

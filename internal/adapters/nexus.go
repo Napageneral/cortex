@@ -19,7 +19,7 @@ type NexusAdapterOptions struct {
 	Source    string
 }
 
-// NexusAdapter syncs Nexus event logs into comms events.
+// NexusAdapter syncs Nexus event logs into cortex events.
 type NexusAdapter struct {
 	eventsDir string
 	source    string
@@ -71,29 +71,29 @@ type nexusEventLogEntry struct {
 	Data           map[string]interface{} `json:"data,omitempty"`
 }
 
-func (a *NexusAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (SyncResult, error) {
+func (a *NexusAdapter) Sync(ctx context.Context, cortexDB *sql.DB, full bool) (SyncResult, error) {
 	start := time.Now()
 	var result SyncResult
 
-	if _, err := commsDB.Exec("PRAGMA foreign_keys = ON"); err != nil {
+	if _, err := cortexDB.Exec("PRAGMA foreign_keys = ON"); err != nil {
 		return result, fmt.Errorf("failed to enable foreign keys: %w", err)
 	}
-	_, _ = commsDB.Exec("PRAGMA busy_timeout = 5000")
-	_, _ = commsDB.Exec("PRAGMA journal_mode = WAL")
-	_, _ = commsDB.Exec("PRAGMA synchronous = NORMAL")
+	_, _ = cortexDB.Exec("PRAGMA busy_timeout = 5000")
+	_, _ = cortexDB.Exec("PRAGMA journal_mode = WAL")
+	_, _ = cortexDB.Exec("PRAGMA synchronous = NORMAL")
 	if full {
-		_, _ = commsDB.Exec("PRAGMA synchronous = OFF")
-		_, _ = commsDB.Exec("PRAGMA temp_store = MEMORY")
-		_, _ = commsDB.Exec("PRAGMA cache_size = -200000")         // ~200MB
-		_, _ = commsDB.Exec("PRAGMA mmap_size = 268435456")        // 256MB
-		_, _ = commsDB.Exec("PRAGMA wal_autocheckpoint = 1000000") // reduce checkpoints
+		_, _ = cortexDB.Exec("PRAGMA synchronous = OFF")
+		_, _ = cortexDB.Exec("PRAGMA temp_store = MEMORY")
+		_, _ = cortexDB.Exec("PRAGMA cache_size = -200000")         // ~200MB
+		_, _ = cortexDB.Exec("PRAGMA mmap_size = 268435456")        // 256MB
+		_, _ = cortexDB.Exec("PRAGMA wal_autocheckpoint = 1000000") // reduce checkpoints
 	}
-	_, _ = commsDB.Exec("PRAGMA defer_foreign_keys = ON")
+	_, _ = cortexDB.Exec("PRAGMA defer_foreign_keys = ON")
 
 	var lastSync int64
 	var lastEventID sql.NullString
 	if !full {
-		row := commsDB.QueryRow("SELECT last_sync_at, last_event_id FROM sync_watermarks WHERE adapter = ?", a.Name())
+		row := cortexDB.QueryRow("SELECT last_sync_at, last_event_id FROM sync_watermarks WHERE adapter = ?", a.Name())
 		if err := row.Scan(&lastSync, &lastEventID); err != nil && err != sql.ErrNoRows {
 			return result, fmt.Errorf("failed to get sync watermark: %w", err)
 		}
@@ -109,9 +109,9 @@ func (a *NexusAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sy
 	const contentTypesText = "[\"text\"]"
 
 	txStart := time.Now()
-	tx, err := commsDB.BeginTx(ctx, nil)
+	tx, err := cortexDB.BeginTx(ctx, nil)
 	if err != nil {
-		return result, fmt.Errorf("begin comms tx: %w", err)
+		return result, fmt.Errorf("begin cortex tx: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -259,10 +259,10 @@ func (a *NexusAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sy
 	}
 
 	if err := tx.Commit(); err != nil {
-		return result, fmt.Errorf("commit comms tx: %w", err)
+		return result, fmt.Errorf("commit cortex tx: %w", err)
 	}
 
-	_, err = commsDB.Exec(`
+	_, err = cortexDB.Exec(`
 		INSERT INTO sync_watermarks (adapter, last_sync_at, last_event_id)
 		VALUES (?, ?, ?)
 		ON CONFLICT(adapter) DO UPDATE SET

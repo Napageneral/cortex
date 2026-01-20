@@ -1,4 +1,4 @@
-# 📡 Comms — Unified Communications Cartographer
+# 🧠 Cortex — Workspace Intelligence Layer
 
 A unified communications intelligence layer that aggregates, normalizes, and indexes your communications across all channels (iMessage, Gmail, Slack, X DMs, AI sessions, etc.) into a single queryable event store.
 
@@ -19,7 +19,7 @@ Each has its own format, storage, and access patterns. You can't easily ask:
 
 ## The Solution
 
-Comms provides:
+Cortex provides:
 1. **Unified Event Store** — All communications normalized into a single schema
 2. **Identity Resolution** — Union-find structure to link identities across channels
 3. **Multi-Channel Adapters** — Eve (iMessage), gogcli (Gmail), aix (AI sessions), etc.
@@ -33,7 +33,7 @@ Comms provides:
 │                     Insight Layer (Markdown)                    │
 │  User-defined structure: home/people/, home/timeline/, etc.    │
 ├────────────────────────────────────────────────────────────────┤
-│                     Comms CLI (this project)                    │
+│                     Cortex CLI (this project)                   │
 │  Orchestrates adapters, owns event store, provides queries     │
 ├────────────────────────────────────────────────────────────────┤
 │                     Unified Event Store (SQLite)                │
@@ -50,23 +50,23 @@ Comms provides:
 ## Quick Start
 
 ```bash
-# Initialize comms
-comms init
+# Initialize cortex
+cortex init
 
 # Configure your identity
-comms me set --name "Tyler Brandt" --phone "+17072876731" --email "tnapathy@gmail.com"
+cortex me set --name "Tyler Brandt" --phone "+17072876731" --email "tnapathy@gmail.com"
 
 # Connect adapters
-comms connect imessage    # Uses Eve
-comms connect gmail       # Uses gogcli (requires OAuth setup)
+cortex connect imessage    # Uses Eve
+cortex connect gmail       # Uses gogcli (requires OAuth setup)
 
 # Sync all channels
-comms sync
+cortex sync
 
 # Query your communications
-comms events --person "Dad" --since "2025-01-01"
-comms people --top 20
-comms timeline 2026-01
+cortex events --person "Dad" --since "2025-01-01"
+cortex people --top 20
+cortex timeline 2026-01
 ```
 
 ## Commands
@@ -75,43 +75,43 @@ comms timeline 2026-01
 
 | Command | Description |
 |---------|-------------|
-| `comms init` | Initialize config and event store |
-| `comms me set` | Configure your identity |
-| `comms connect <channel>` | Configure an adapter |
-| `comms adapters` | List configured adapters |
+| `cortex init` | Initialize config and event store |
+| `cortex me set` | Configure your identity |
+| `cortex connect <channel>` | Configure an adapter |
+| `cortex adapters` | List configured adapters |
 
 ### Sync
 
 | Command | Description |
 |---------|-------------|
-| `comms sync` | Sync all connected adapters |
-| `comms sync --adapter imessage` | Sync specific adapter |
-| `comms sync --full` | Full repopulation |
+| `cortex sync` | Sync all connected adapters |
+| `cortex sync --adapter imessage` | Sync specific adapter |
+| `cortex sync --full` | Full repopulation |
 
 ### Query
 
 | Command | Description |
 |---------|-------------|
-| `comms events` | Query events with filters |
-| `comms people` | List/search people |
-| `comms people <name>` | Show person details |
-| `comms timeline <period>` | Events in time period |
-| `comms db query <sql>` | Raw SQL access |
+| `cortex events` | Query events with filters |
+| `cortex people` | List/search people |
+| `cortex people <name>` | Show person details |
+| `cortex timeline <period>` | Events in time period |
+| `cortex db query <sql>` | Raw SQL access |
 
 ### Identity Management
 
 | Command | Description |
 |---------|-------------|
-| `comms identify` | List all people + identities |
-| `comms identify --merge <p1> <p2>` | Union two people |
-| `comms identify --add <person> --email <email>` | Add identity |
+| `cortex identify` | List all people + identities |
+| `cortex identify --merge <p1> <p2>` | Union two people |
+| `cortex identify --add <person> --email <email>` | Add identity |
 
 ### Tags
 
 | Command | Description |
 |---------|-------------|
-| `comms tag list` | List all tags |
-| `comms tag add --filter <filter> --tag <tag>` | Apply tag to events |
+| `cortex tag list` | List all tags |
+| `cortex tag add --filter <filter> --tag <tag>` | Apply tag to events |
 
 ## Event Schema
 
@@ -165,7 +165,7 @@ CREATE TABLE tags (
 
 ## Configuration
 
-Config: `~/.config/comms/config.yaml` (git-tracked in Nexus)
+Config: `~/.config/cortex/config.yaml` (git-tracked in Nexus)
 
 ```yaml
 me:
@@ -186,7 +186,7 @@ adapters:
     account: tnapathy@gmail.com
 ```
 
-Data: `~/Library/Application Support/Comms/comms.db`
+Data: `~/Library/Application Support/Cortex/cortex.db`
 
 ## Adapters
 
@@ -198,7 +198,7 @@ brew install Napageneral/tap/eve
 eve init && eve sync
 
 # Connect
-comms connect imessage
+cortex connect imessage
 ```
 
 ### Gmail (via gogcli)
@@ -209,7 +209,7 @@ brew install steipete/tap/gogcli
 gog auth add tnapathy@gmail.com
 
 # Connect
-comms connect gmail --account tnapathy@gmail.com
+cortex connect gmail --account tnapathy@gmail.com
 ```
 
 ### AI Sessions (via aix)
@@ -217,16 +217,16 @@ comms connect gmail --account tnapathy@gmail.com
 ```bash
 # Prerequisite: aix installed and synced
 # Connect
-comms connect cursor
+cortex connect cursor
 ```
 
 ## Development
 
 ```bash
-cd comms
+cd cortex
 go mod tidy
 make build
-./comms init
+./cortex init
 ```
 
 ## License

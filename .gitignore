@@ -1,5 +1,5 @@
 # Built binaries
-comms
+/cortex
 bin/
 
 # Database files

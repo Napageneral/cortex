@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Napageneral/comms/internal/adapters"
-	"github.com/Napageneral/comms/internal/config"
+	"github.com/Napageneral/cortex/internal/adapters"
+	"github.com/Napageneral/cortex/internal/config"
 )
 
 // AdapterResult contains the result of syncing a single adapter

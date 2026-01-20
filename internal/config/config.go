@@ -9,7 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config represents the comms configuration
+// Config represents the cortex configuration
 type Config struct {
 	Me       MeConfig                `yaml:"me"`
 	Adapters map[string]AdapterConfig `yaml:"adapters"`
@@ -37,6 +37,9 @@ type AdapterConfig struct {
 // GetConfigDir returns the XDG-compliant config directory
 func GetConfigDir() (string, error) {
 	// Explicit override (useful for tests and portable installs)
+	if override := os.Getenv("CORTEX_CONFIG_DIR"); override != "" {
+		return override, nil
+	}
 	if override := os.Getenv("COMMS_CONFIG_DIR"); override != "" {
 		return override, nil
 	}
@@ -51,12 +54,15 @@ func GetConfigDir() (string, error) {
 		}
 		base = filepath.Join(home, ".config")
 	}
-	return filepath.Join(base, "comms"), nil
+	return filepath.Join(base, "cortex"), nil
 }
 
 // GetDataDir returns the platform-specific data directory
 func GetDataDir() (string, error) {
 	// Explicit override (useful for tests and portable installs)
+	if override := os.Getenv("CORTEX_DATA_DIR"); override != "" {
+		return override, nil
+	}
 	if override := os.Getenv("COMMS_DATA_DIR"); override != "" {
 		return override, nil
 	}
@@ -67,14 +73,14 @@ func GetDataDir() (string, error) {
 	}
 
 	if runtime.GOOS == "darwin" {
-		return filepath.Join(home, "Library", "Application Support", "Comms"), nil
+		return filepath.Join(home, "Library", "Application Support", "Cortex"), nil
 	}
 
 	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
-		return filepath.Join(xdg, "comms"), nil
+		return filepath.Join(xdg, "cortex"), nil
 	}
 
-	return filepath.Join(home, ".local", "share", "comms"), nil
+	return filepath.Join(home, ".local", "share", "cortex"), nil
 }
 
 // Load loads config from the config file

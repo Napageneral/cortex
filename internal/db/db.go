@@ -8,7 +8,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/Napageneral/comms/internal/config"
+	"github.com/Napageneral/cortex/internal/config"
 )
 
 //go:embed schema.sql
@@ -21,7 +21,7 @@ func Init() error {
 		return err
 	}
 
-	dbPath := filepath.Join(dataDir, "comms.db")
+	dbPath := filepath.Join(dataDir, "cortex.db")
 
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -57,7 +57,7 @@ func Open() (*sql.DB, error) {
 		return nil, err
 	}
 
-	dbPath := filepath.Join(dataDir, "comms.db")
+	dbPath := filepath.Join(dataDir, "cortex.db")
 
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -98,5 +98,5 @@ func GetPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dataDir, "comms.db"), nil
+	return filepath.Join(dataDir, "cortex.db"), nil
 }

@@ -17,20 +17,22 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Napageneral/comms/internal/adapters"
-	"github.com/Napageneral/comms/internal/bus"
-	"github.com/Napageneral/comms/internal/chunk"
-	"github.com/Napageneral/comms/internal/compute"
-	"github.com/Napageneral/comms/internal/config"
-	"github.com/Napageneral/comms/internal/db"
-	"github.com/Napageneral/comms/internal/gemini"
-	"github.com/Napageneral/comms/internal/identify"
-	"github.com/Napageneral/comms/internal/importer"
-	"github.com/Napageneral/comms/internal/me"
-	"github.com/Napageneral/comms/internal/query"
-	"github.com/Napageneral/comms/internal/sync"
-	"github.com/Napageneral/comms/internal/tag"
-	"github.com/Napageneral/comms/internal/timeline"
+	"github.com/Napageneral/cortex/internal/adapters"
+	"github.com/Napageneral/cortex/internal/bus"
+	"github.com/Napageneral/cortex/internal/chunk"
+	"github.com/Napageneral/cortex/internal/compute"
+	"github.com/Napageneral/cortex/internal/config"
+	"github.com/Napageneral/cortex/internal/db"
+	"github.com/Napageneral/cortex/internal/documents"
+	"github.com/Napageneral/cortex/internal/gemini"
+	"github.com/Napageneral/cortex/internal/identify"
+	"github.com/Napageneral/cortex/internal/importer"
+	"github.com/Napageneral/cortex/internal/me"
+	"github.com/Napageneral/cortex/internal/query"
+	"github.com/Napageneral/cortex/internal/search"
+	"github.com/Napageneral/cortex/internal/sync"
+	"github.com/Napageneral/cortex/internal/tag"
+	"github.com/Napageneral/cortex/internal/timeline"
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/cobra"
 )
@@ -44,9 +46,9 @@ var (
 
 func main() {
 	rootCmd := &cobra.Command{
-		Use:   "comms",
-		Short: "Unified communications cartographer",
-		Long: `Comms aggregates your communications across all channels 
+		Use:   "cortex",
+		Short: "Workspace intelligence layer",
+		Long: `Cortex aggregates your communications across all channels 
 (iMessage, Gmail, Slack, AI sessions, etc.) into a single 
 queryable event store with identity resolution.`,
 	}
@@ -65,7 +67,7 @@ queryable event store with identity resolution.`,
 					"date":    buildDate,
 				})
 			} else {
-				fmt.Printf("comms %s (%s, %s)\n", version, commit, buildDate)
+				fmt.Printf("cortex %s (%s, %s)\n", version, commit, buildDate)
 			}
 		},
 	})
@@ -73,7 +75,7 @@ queryable event store with identity resolution.`,
 	// init command
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "init",
-		Short: "Initialize comms config and database",
+		Short: "Initialize cortex config and database",
 		Run: func(cmd *cobra.Command, args []string) {
 			type Result struct {
 				OK        bool   `json:"ok"`
@@ -161,7 +163,7 @@ queryable event store with identity resolution.`,
 			}
 			result.DBPath = dbPath
 
-			result.Message = "Comms initialized successfully"
+			result.Message = "Cortex initialized successfully"
 
 			if jsonOutput {
 				printJSON(result)
@@ -169,7 +171,7 @@ queryable event store with identity resolution.`,
 				fmt.Printf("✓ Config directory: %s\n", result.ConfigDir)
 				fmt.Printf("✓ Data directory: %s\n", result.DataDir)
 				fmt.Printf("✓ Database: %s\n", result.DBPath)
-				fmt.Println("\nComms initialized successfully!")
+				fmt.Println("\nCortex initialized successfully!")
 			}
 		},
 	})
@@ -346,7 +348,7 @@ queryable event store with identity resolution.`,
 			if person == nil {
 				result := Result{
 					OK:      false,
-					Message: "Identity not configured. Run 'comms me set --name \"Your Name\"' to configure.",
+					Message: "Identity not configured. Run 'cortex me set --name \"Your Name\"' to configure.",
 				}
 				if jsonOutput {
 					printJSON(result)
@@ -437,7 +439,7 @@ queryable event store with identity resolution.`,
 			result := Result{OK: true}
 
 			if len(cfg.Adapters) == 0 {
-				result.Message = "No adapters configured. Run 'comms connect <adapter>' to configure one."
+				result.Message = "No adapters configured. Run 'cortex connect <adapter>' to configure one."
 				if jsonOutput {
 					printJSON(result)
 				} else {
@@ -573,7 +575,7 @@ queryable event store with identity resolution.`,
 			} else {
 				fmt.Println("✓ iMessage adapter configured")
 				fmt.Printf("  Eve database: %s\n", eveDBPath)
-				fmt.Println("\nRun 'comms sync' to sync iMessage events")
+				fmt.Println("\nRun 'cortex sync' to sync iMessage events")
 			}
 		},
 	}
@@ -667,7 +669,7 @@ queryable event store with identity resolution.`,
 				fmt.Println("\nNote: Ensure gogcli is installed and authenticated:")
 				fmt.Println("  brew install steipete/tap/gogcli")
 				fmt.Printf("  gog auth add %s\n", account)
-				fmt.Printf("\nRun 'comms sync --adapter %s' to sync Gmail events\n", adapterName)
+				fmt.Printf("\nRun 'cortex sync --adapter %s' to sync Gmail events\n", adapterName)
 			}
 		},
 	}
@@ -739,7 +741,7 @@ queryable event store with identity resolution.`,
 				fmt.Println("\nNote: Ensure gogcli is installed and authenticated:")
 				fmt.Println("  brew install steipete/tap/gogcli")
 				fmt.Printf("  gog auth add %s\n", account)
-				fmt.Printf("\nRun 'comms sync --adapter %s' to sync calendar events\n", adapterName)
+				fmt.Printf("\nRun 'cortex sync --adapter %s' to sync calendar events\n", adapterName)
 			}
 		},
 	}
@@ -806,7 +808,7 @@ queryable event store with identity resolution.`,
 				fmt.Printf("  Account: %s\n", account)
 				fmt.Println("\nNote: Ensure People API is enabled for your gogcli OAuth project:")
 				fmt.Println("  People API: https://console.cloud.google.com/apis/library/people.googleapis.com")
-				fmt.Println("\nRun 'comms sync --adapter " + adapterName + " --full' to ingest contacts and unify identities")
+				fmt.Println("\nRun 'cortex sync --adapter " + adapterName + " --full' to ingest contacts and unify identities")
 			}
 		},
 	}
@@ -878,13 +880,13 @@ queryable event store with identity resolution.`,
 				_ = exec.Command(os.Args[0], "sync", "--adapter", gmailName, "--full", "--background").Run()
 				_ = exec.Command(os.Args[0], "sync", "--adapter", calName, "--full", "--background").Run()
 				_ = exec.Command(os.Args[0], "sync", "--adapter", contactsName, "--full", "--background").Run()
-				fmt.Println("Run: comms sync status")
+				fmt.Println("Run: cortex sync status")
 			} else {
 				fmt.Println("\nBackfills not started (use --start to kick off automatically).")
 			}
 
 			fmt.Println("\nRealtime (Gmail):")
-			fmt.Println("  1) Run: comms watch gmail")
+			fmt.Println("  1) Run: cortex watch gmail")
 			fmt.Println("  2) Configure Pub/Sub topic + start watch:")
 			fmt.Printf("     gog gmail watch start --account %s --topic projects/.../topics/... --hook-url http://127.0.0.1:8799/hook/gmail\n", account)
 		},
@@ -967,7 +969,7 @@ queryable event store with identity resolution.`,
 			} else {
 				fmt.Println("✓ Cursor adapter configured")
 				fmt.Printf("  aix database: %s\n", aixDBPath)
-				fmt.Println("\nRun 'comms sync --adapter cursor' to sync Cursor AI sessions")
+				fmt.Println("\nRun 'cortex sync --adapter cursor' to sync Cursor AI sessions")
 			}
 		},
 	}
@@ -1029,7 +1031,7 @@ queryable event store with identity resolution.`,
 				fmt.Println("\nNote: Ensure bird is installed and authenticated:")
 				fmt.Println("  brew install steipete/tap/bird")
 				fmt.Println("  bird check")
-				fmt.Println("\nRun 'comms sync' to sync X events (bookmarks, likes, mentions)")
+				fmt.Println("\nRun 'cortex sync' to sync X events (bookmarks, likes, mentions)")
 			}
 		},
 	}
@@ -1065,7 +1067,7 @@ queryable event store with identity resolution.`,
 					}
 					os.Exit(1)
 				}
-				logPath := filepath.Join(dataDir, "comms-sync.log")
+				logPath := filepath.Join(dataDir, "cortex-sync.log")
 
 				argv := make([]string, 0, len(os.Args))
 				for _, a := range os.Args {
@@ -1114,7 +1116,7 @@ queryable event store with identity resolution.`,
 					printJSON(result)
 				} else {
 					fmt.Printf("✓ %s\n", result.Message)
-					fmt.Println("Run: comms sync status")
+					fmt.Println("Run: cortex sync status")
 				}
 				return
 			}
@@ -1220,7 +1222,7 @@ queryable event store with identity resolution.`,
 	}
 	syncCmd.Flags().String("adapter", "", "Sync specific adapter (e.g., imessage, gmail)")
 	syncCmd.Flags().Bool("full", false, "Force full re-sync instead of incremental")
-	syncCmd.Flags().Bool("background", false, "Run sync in background (writes logs to comms-sync.log)")
+	syncCmd.Flags().Bool("background", false, "Run sync in background (writes logs to cortex-sync.log)")
 
 	// sync status subcommand
 	syncStatusCmd := &cobra.Command{
@@ -1257,7 +1259,7 @@ queryable event store with identity resolution.`,
 			}
 
 			if len(jobs) == 0 {
-				result := Result{OK: true, Message: "No job status found yet. Run: comms sync"}
+				result := Result{OK: true, Message: "No job status found yet. Run: cortex sync"}
 				if jsonOutput {
 					printJSON(result)
 				} else {
@@ -1320,7 +1322,7 @@ queryable event store with identity resolution.`,
 	// import command
 	importCmd := &cobra.Command{
 		Use:   "import",
-		Short: "Import external data into comms",
+		Short: "Import external data into cortex",
 	}
 
 	// import mbox (Google Takeout)
@@ -1430,7 +1432,7 @@ queryable event store with identity resolution.`,
 				}
 				fmt.Printf("  Duration: %s\n", res.Duration)
 				fmt.Println("\nNext: run an incremental API sync to establish history baseline:")
-				fmt.Printf("  comms sync --adapter %s\n", adapterName)
+				fmt.Printf("  cortex sync --adapter %s\n", adapterName)
 			}
 		},
 	}
@@ -1712,7 +1714,7 @@ queryable event store with identity resolution.`,
 	// bus command
 	busCmd := &cobra.Command{
 		Use:   "bus",
-		Short: "Inspect the comms event bus",
+		Short: "Inspect the cortex event bus",
 	}
 
 	busListCmd := &cobra.Command{
@@ -2301,7 +2303,7 @@ queryable event store with identity resolution.`,
 				printJSON(result)
 			} else {
 				fmt.Printf("Generated %d merge suggestions\n", count)
-				fmt.Println("Use 'comms identify suggestions' to review them")
+				fmt.Println("Use 'cortex identify suggestions' to review them")
 			}
 		},
 	}
@@ -2376,7 +2378,7 @@ queryable event store with identity resolution.`,
 				printJSON(result)
 			} else {
 				if len(infos) == 0 {
-					fmt.Println("No pending suggestions. Run 'comms identify suggest' to generate some.")
+					fmt.Println("No pending suggestions. Run 'cortex identify suggest' to generate some.")
 				} else {
 					fmt.Printf("Found %d pending suggestions:\n\n", len(infos))
 					for _, s := range infos {
@@ -2384,7 +2386,7 @@ queryable event store with identity resolution.`,
 						fmt.Printf("    Evidence: %s (confidence: %.1f%%)\n", s.EvidenceType, s.Confidence*100)
 						fmt.Printf("    Combined events: %d\n\n", s.EventCount)
 					}
-					fmt.Println("Use 'comms identify accept <id>' or 'comms identify reject <id>'")
+					fmt.Println("Use 'cortex identify accept <id>' or 'cortex identify reject <id>'")
 				}
 			}
 		},
@@ -2615,7 +2617,7 @@ The algorithm runs in three phases:
 				if resolveAutoMerge {
 					fmt.Printf("  Auto-merges executed: %d\n", res.AutoMergesExecuted)
 				} else {
-					fmt.Println("\nUse 'comms identify merges' to review pending suggestions")
+					fmt.Println("\nUse 'cortex identify merges' to review pending suggestions")
 				}
 			}
 		},
@@ -2712,7 +2714,7 @@ The algorithm runs in three phases:
 			} else {
 				if len(infos) == 0 {
 					fmt.Println("No pending merge suggestions.")
-					fmt.Println("\nRun 'comms identify resolve' to generate suggestions")
+					fmt.Println("\nRun 'cortex identify resolve' to generate suggestions")
 				} else {
 					fmt.Printf("Found %d %s merge suggestions:\n\n", len(infos), status)
 					for _, m := range infos {
@@ -2727,7 +2729,7 @@ The algorithm runs in three phases:
 						}
 						fmt.Println()
 					}
-					fmt.Println("Use 'comms identify accept <id>' or 'comms identify reject <id>'")
+					fmt.Println("Use 'cortex identify accept <id>' or 'cortex identify reject <id>'")
 				}
 			}
 		},
@@ -3439,7 +3441,7 @@ The algorithm runs in three phases:
 				fmt.Printf("Facts for %s (%s):\n\n", personName, personID[:8])
 				if len(infos) == 0 {
 					fmt.Println("  No facts extracted yet.")
-					fmt.Println("\n  Run 'comms extract pii' to extract facts from conversations")
+					fmt.Println("\n  Run 'cortex extract pii' to extract facts from segments")
 				} else {
 					currentCat := ""
 					for _, f := range infos {
@@ -3798,10 +3800,10 @@ The algorithm runs in three phases:
 		Long: `Display events grouped by day for a specified time period.
 
 Examples:
-  comms timeline 2026-01         # January 2026
-  comms timeline 2026-01-15      # Specific day
-  comms timeline --today         # Today's events
-  comms timeline --week          # This week (Mon-Sun)`,
+  cortex timeline 2026-01         # January 2026
+  cortex timeline 2026-01-15      # Specific day
+  cortex timeline --today         # Today's events
+  cortex timeline --week          # This week (Mon-Sun)`,
 		Args: cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			type DayResult struct {
@@ -3857,10 +3859,10 @@ Examples:
 				} else {
 					fmt.Fprintf(os.Stderr, "Error: %s\n\n", result.Message)
 					fmt.Fprintf(os.Stderr, "Usage:\n")
-					fmt.Fprintf(os.Stderr, "  comms timeline 2026-01         # Month view\n")
-					fmt.Fprintf(os.Stderr, "  comms timeline 2026-01-15      # Single day\n")
-					fmt.Fprintf(os.Stderr, "  comms timeline --today         # Today\n")
-					fmt.Fprintf(os.Stderr, "  comms timeline --week          # This week\n")
+					fmt.Fprintf(os.Stderr, "  cortex timeline 2026-01         # Month view\n")
+					fmt.Fprintf(os.Stderr, "  cortex timeline 2026-01-15      # Single day\n")
+					fmt.Fprintf(os.Stderr, "  cortex timeline --today         # Today\n")
+					fmt.Fprintf(os.Stderr, "  cortex timeline --week          # This week\n")
 				}
 				os.Exit(1)
 			}
@@ -4096,13 +4098,13 @@ Examples:
 
 Examples:
   # Tag a specific event
-  comms tag add --event abc123 --tag project:htaa
+  cortex tag add --event abc123 --tag project:htaa
 
   # Bulk tag events by person
-  comms tag add --person "Dane" --tag context:business
+  cortex tag add --person "Dane" --tag context:business
 
   # Bulk tag events by channel and time
-  comms tag add --channel imessage --since 2026-01-01 --tag topic:planning`,
+  cortex tag add --channel imessage --since 2026-01-01 --tag topic:planning`,
 		Run: func(cmd *cobra.Command, args []string) {
 			type Result struct {
 				OK           bool   `json:"ok"`
@@ -4327,15 +4329,15 @@ Examples:
 	dbQueryCmd := &cobra.Command{
 		Use:   "query <sql>",
 		Short: "Execute raw SQL query",
-		Long: `Execute a raw SQL query against the comms database.
+		Long: `Execute a raw SQL query against the cortex database.
 
 By default, only SELECT statements are allowed for safety.
 Use --write flag to allow mutations (INSERT, UPDATE, DELETE, etc.).
 
 Examples:
-  comms db query "SELECT COUNT(*) FROM events"
-  comms db query "SELECT * FROM persons LIMIT 10"
-  comms db query --write "UPDATE persons SET display_name = 'Dad' WHERE canonical_name = 'Father'"`,
+  cortex db query "SELECT COUNT(*) FROM events"
+  cortex db query "SELECT * FROM persons LIMIT 10"
+  cortex db query --write "UPDATE persons SET display_name = 'Dad' WHERE canonical_name = 'Father'"`,
 		Args: cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			type Result struct {
@@ -4514,22 +4516,22 @@ Examples:
 	// chunk command
 	chunkCmd := &cobra.Command{
 		Use:   "chunk",
-		Short: "Chunk events into conversations",
-		Long:  "Create conversations by applying chunking strategies defined in conversation_definitions",
+		Short: "Chunk events into segments",
+		Long:  "Create segments by applying chunking strategies defined in conversation_definitions",
 	}
 
 	// chunk run command
 	chunkRunCmd := &cobra.Command{
 		Use:   "run",
 		Short: "Run chunking for a definition",
-		Long:  "Apply a conversation definition's chunking strategy to create conversations",
+		Long:  "Apply a conversation definition's chunking strategy to create segments",
 		Args:  cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			type Result struct {
 				OK                   bool   `json:"ok"`
 				Message              string `json:"message,omitempty"`
 				DefinitionName       string `json:"definition_name,omitempty"`
-				ConversationsCreated int    `json:"conversations_created,omitempty"`
+				SegmentsCreated int    `json:"segments_created,omitempty"`
 				EventsProcessed      int    `json:"events_processed,omitempty"`
 				Duration             string `json:"duration,omitempty"`
 			}
@@ -4565,7 +4567,7 @@ Examples:
 
 			// Look up definition by name
 			var definitionID string
-			err = database.QueryRow("SELECT id FROM conversation_definitions WHERE name = ?", definitionName).Scan(&definitionID)
+			err = database.QueryRow("SELECT id FROM segment_definitions WHERE name = ?", definitionName).Scan(&definitionID)
 			if err != nil {
 				result := Result{OK: false, Message: fmt.Sprintf("Definition '%s' not found", definitionName)}
 				if jsonOutput {
@@ -4603,7 +4605,7 @@ Examples:
 			result := Result{
 				OK:                   true,
 				DefinitionName:       definitionName,
-				ConversationsCreated: chunkResult.ConversationsCreated,
+				SegmentsCreated: chunkResult.SegmentsCreated,
 				EventsProcessed:      chunkResult.EventsProcessed,
 				Duration:             chunkResult.Duration.String(),
 			}
@@ -4611,18 +4613,18 @@ Examples:
 			if jsonOutput {
 				printJSON(result)
 			} else {
-				fmt.Printf("Chunked %d events into %d conversations using '%s' in %s\n",
-					result.EventsProcessed, result.ConversationsCreated, result.DefinitionName, result.Duration)
+				fmt.Printf("Chunked %d events into %d segments using '%s' in %s\n",
+					result.EventsProcessed, result.SegmentsCreated, result.DefinitionName, result.Duration)
 			}
 		},
 	}
-	chunkRunCmd.Flags().String("definition", "", "Conversation definition name")
+	chunkRunCmd.Flags().String("definition", "", "Segment definition name")
 
 	// chunk list command
 	chunkListCmd := &cobra.Command{
 		Use:   "list",
-		Short: "List conversation definitions",
-		Long:  "Show all conversation definitions and their configurations",
+		Short: "List segment definitions",
+		Long:  "Show all segment definitions and their configurations",
 		Run: func(cmd *cobra.Command, args []string) {
 			type Result struct {
 				OK          bool               `json:"ok"`
@@ -4660,7 +4662,7 @@ Examples:
 			} else {
 				if len(definitions) == 0 {
 					fmt.Println("No conversation definitions found")
-					fmt.Println("\nRun 'comms chunk seed' to create default definitions")
+					fmt.Println("\nRun 'cortex chunk seed' to create default definitions")
 				} else {
 					fmt.Printf("Found %d conversation definition(s):\n\n", len(definitions))
 					for _, def := range definitions {
@@ -4715,7 +4717,7 @@ Examples:
 				Scope:      "thread",
 			}
 			_, err = chunk.CreateDefinition(ctx, database, "imessage_3hr", "imessage", "time_gap", timeGapConfig,
-				"iMessage conversations with 3-hour gap threshold, scoped to threads")
+				"iMessage segments with 3-hour gap threshold, scoped to threads")
 			if err != nil {
 				result := Result{OK: false, Message: fmt.Sprintf("Failed to create imessage_3hr: %v", err)}
 				if jsonOutput {
@@ -4730,7 +4732,7 @@ Examples:
 			// Create gmail_thread definition
 			threadConfig := chunk.ThreadConfig{}
 			_, err = chunk.CreateDefinition(ctx, database, "gmail_thread", "gmail", "thread", threadConfig,
-				"Gmail conversations using native thread boundaries")
+				"Gmail segments using native thread boundaries")
 			if err != nil {
 				result := Result{OK: false, Message: fmt.Sprintf("Failed to create gmail_thread: %v", err)}
 				if jsonOutput {
@@ -4836,15 +4838,15 @@ Examples:
 				fmt.Println("Adaptive controllers: enabled (auto-RPM, adaptive concurrency)")
 			}
 
-			// Pre-encode conversations if requested (for maximum throughput)
+			// Pre-encode segments if requested (for maximum throughput)
 			if computePreload {
-				fmt.Println("Pre-loading conversations into cache...")
+				fmt.Println("Pre-loading segments into cache...")
 				ctx := context.Background()
-				count, err := engine.PreloadConversations(ctx)
+				count, err := engine.PreloadSegments(ctx)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: preload failed: %v\n", err)
 				} else {
-					fmt.Printf("Pre-loaded %d conversations into cache\n", count)
+					fmt.Printf("Pre-loaded %d segments into cache\n", count)
 				}
 			}
 
@@ -4928,7 +4930,7 @@ Examples:
 	computeRunCmd.Flags().IntVarP(&computeWorkers, "workers", "w", 50, "Number of concurrent workers (default: 50 for Tier-3 keys)")
 	computeRunCmd.Flags().StringVar(&computeAnalysisModel, "analysis-model", "", "Gemini model for analysis")
 	computeRunCmd.Flags().StringVar(&computeEmbeddingModel, "embedding-model", "", "Gemini model for embeddings")
-	computeRunCmd.Flags().BoolVar(&computePreload, "preload", false, "Pre-load all conversations into cache for max throughput")
+	computeRunCmd.Flags().BoolVar(&computePreload, "preload", false, "Pre-load all segments into cache for max throughput")
 	computeRunCmd.Flags().BoolVar(&computeDisableAdaptive, "no-adaptive", false, "Disable adaptive concurrency controller")
 	computeRunCmd.Flags().IntVar(&computeEmbedBatchSize, "embed-batch-size", 100, "Embedding batch size (max 100)")
 
@@ -4970,32 +4972,38 @@ Examples:
 				count, err = engine.EnqueueFacetEmbeddings(ctx)
 			case "person-embeddings":
 				count, err = engine.EnqueuePersonEmbeddings(ctx)
+			case "document-embeddings":
+				count, err = engine.EnqueueDocumentEmbeddings(ctx)
 			case "all-embeddings":
 				// Enqueue all embedding types
 				c1, e1 := engine.EnqueueEmbeddings(ctx)
 				c2, e2 := engine.EnqueueFacetEmbeddings(ctx)
 				c3, e3 := engine.EnqueuePersonEmbeddings(ctx)
-				count = c1 + c2 + c3
+				c4, e4 := engine.EnqueueDocumentEmbeddings(ctx)
+				count = c1 + c2 + c3 + c4
 				if e1 != nil {
 					err = e1
 				} else if e2 != nil {
 					err = e2
-				} else {
+				} else if e3 != nil {
 					err = e3
+				} else {
+					err = e4
 				}
 				if jsonOutput {
 					printJSON(map[string]any{
 						"ok":            err == nil,
-						"conversations": c1,
+						"segments": c1,
 						"facets":        c2,
 						"persons":       c3,
+						"documents":     c4,
 						"total":         count,
 					})
 					return
 				}
 			default:
 				fmt.Fprintf(os.Stderr, "Unknown job type: %s\n", jobType)
-				fmt.Fprintf(os.Stderr, "Available types: analysis, embeddings, facet-embeddings, person-embeddings, all-embeddings\n")
+				fmt.Fprintf(os.Stderr, "Available types: analysis, embeddings, facet-embeddings, person-embeddings, document-embeddings, all-embeddings\n")
 				os.Exit(1)
 			}
 
@@ -5067,6 +5075,20 @@ Examples:
 			ctx := context.Background()
 			now := time.Now().Unix()
 
+			promptDir := os.Getenv("COMMS_PROMPTS_DIR")
+			if strings.TrimSpace(promptDir) == "" {
+				promptDir = "prompts"
+			}
+			readPrompt := func(filename string) string {
+				path := filepath.Join(promptDir, filename)
+				raw, err := os.ReadFile(path)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error reading prompt %s: %v\n", path, err)
+					os.Exit(1)
+				}
+				return string(raw)
+			}
+
 			// Seed convo-all-v1 analysis type
 			promptTemplate := `# Conversation Analysis
 
@@ -5096,7 +5118,7 @@ Conversation:
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				ON CONFLICT(name) DO NOTHING
 			`, "convo-all-v1", "convo-all-v1", "1.0.0",
-				"Extract entities, topics, emotions, and humor from conversations",
+				"Extract entities, topics, emotions, and humor from segments",
 				"structured", facetsConfig, promptTemplate,
 				"gemini-2.0-flash", now, now)
 
@@ -5282,7 +5304,7 @@ Conversation:
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				ON CONFLICT(name) DO NOTHING
 			`, "pii_extraction_v1", "pii_extraction", "1.0.0",
-				"Extract all PII from conversations for identity resolution",
+				"Extract all PII from segments for identity resolution",
 				"structured", piiFacetsConfig, piiPromptTemplate,
 				"gemini-2.0-flash", now, now)
 
@@ -5351,6 +5373,107 @@ Conversation:
 				os.Exit(1)
 			}
 
+			// Seed self_preference_extraction_v1 analysis type
+			selfPreferencePrompt := readPrompt("self-preference-extraction-v1.prompt.md")
+			selfPreferenceFacetsConfig := `{
+				"mappings": [
+					{"json_path": "preferences[].memory_entry", "facet_type": "self_preference"}
+				]
+			}`
+			_, err = database.ExecContext(ctx, `
+				INSERT INTO analysis_types (id, name, version, description, output_type, facets_config_json, prompt_template, model, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(name) DO NOTHING
+			`, "self_preference_extraction_v1", "self_preference_extraction_v1", "1.0.0",
+				"Extract user preferences for memory synthesis",
+				"structured", selfPreferenceFacetsConfig, selfPreferencePrompt,
+				"gemini-2.0-flash", now, now)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error seeding self_preference_extraction_v1: %v\n", err)
+				os.Exit(1)
+			}
+
+			// Seed self_knowledge_extraction_v1 analysis type
+			selfKnowledgePrompt := readPrompt("self-knowledge-extraction-v1.prompt.md")
+			selfKnowledgeFacetsConfig := `{
+				"mappings": [
+					{"json_path": "knowledge[].memory_entry", "facet_type": "self_knowledge"}
+				]
+			}`
+			_, err = database.ExecContext(ctx, `
+				INSERT INTO analysis_types (id, name, version, description, output_type, facets_config_json, prompt_template, model, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(name) DO NOTHING
+			`, "self_knowledge_extraction_v1", "self_knowledge_extraction_v1", "1.0.0",
+				"Extract user knowledge and expertise for memory synthesis",
+				"structured", selfKnowledgeFacetsConfig, selfKnowledgePrompt,
+				"gemini-2.0-flash", now, now)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error seeding self_knowledge_extraction_v1: %v\n", err)
+				os.Exit(1)
+			}
+
+			// Seed correction_extraction_v1 analysis type
+			correctionPrompt := readPrompt("correction-extraction-v1.prompt.md")
+			correctionFacetsConfig := `{
+				"mappings": [
+					{"json_path": "corrections[].memory_entry", "facet_type": "self_correction"},
+					{"json_path": "frustration_signals[].implied_rule", "facet_type": "self_correction"}
+				]
+			}`
+			_, err = database.ExecContext(ctx, `
+				INSERT INTO analysis_types (id, name, version, description, output_type, facets_config_json, prompt_template, model, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(name) DO NOTHING
+			`, "correction_extraction_v1", "correction_extraction_v1", "1.0.0",
+				"Extract AI corrections and behavioral rules for memory synthesis",
+				"structured", correctionFacetsConfig, correctionPrompt,
+				"gemini-2.0-flash", now, now)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error seeding correction_extraction_v1: %v\n", err)
+				os.Exit(1)
+			}
+
+			// Seed relationship_context_extraction_v1 analysis type
+			relationshipPrompt := readPrompt("relationship-context-extraction-v1.prompt.md")
+			relationshipFacetsConfig := `{
+				"mappings": [
+					{"json_path": "relationships[].memory_entry", "facet_type": "relationship_context"}
+				]
+			}`
+			_, err = database.ExecContext(ctx, `
+				INSERT INTO analysis_types (id, name, version, description, output_type, facets_config_json, prompt_template, model, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(name) DO NOTHING
+			`, "relationship_context_extraction_v1", "relationship_context_extraction_v1", "1.0.0",
+				"Extract relationship context for user memory",
+				"structured", relationshipFacetsConfig, relationshipPrompt,
+				"gemini-2.0-flash", now, now)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error seeding relationship_context_extraction_v1: %v\n", err)
+				os.Exit(1)
+			}
+
+			// Seed workspace_pattern_extraction_v1 analysis type
+			workspacePatternPrompt := readPrompt("workspace-pattern-extraction-v1.prompt.md")
+			workspacePatternFacetsConfig := `{
+				"mappings": [
+					{"json_path": "workspace_patterns[].memory_entry", "facet_type": "workspace_convention"}
+				]
+			}`
+			_, err = database.ExecContext(ctx, `
+				INSERT INTO analysis_types (id, name, version, description, output_type, facets_config_json, prompt_template, model, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(name) DO NOTHING
+			`, "workspace_pattern_extraction_v1", "workspace_pattern_extraction_v1", "1.0.0",
+				"Extract workspace conventions and patterns for shared memory",
+				"structured", workspacePatternFacetsConfig, workspacePatternPrompt,
+				"gemini-2.0-flash", now, now)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error seeding workspace_pattern_extraction_v1: %v\n", err)
+				os.Exit(1)
+			}
+
 			if jsonOutput {
 				printJSON(map[string]any{"ok": true, "message": "Seeded analysis types"})
 			} else {
@@ -5359,6 +5482,11 @@ Conversation:
 				fmt.Println("  - pii_extraction_v1 (PII extraction for identity resolution)")
 				fmt.Println("  - nexus_cli_invocations_v1 (nexus CLI extraction)")
 				fmt.Println("  - terminal_invocations_v1 (terminal command extraction)")
+				fmt.Println("  - self_preference_extraction_v1 (user preferences)")
+				fmt.Println("  - self_knowledge_extraction_v1 (user knowledge)")
+				fmt.Println("  - correction_extraction_v1 (AI corrections)")
+				fmt.Println("  - relationship_context_extraction_v1 (relationship context)")
+				fmt.Println("  - workspace_pattern_extraction_v1 (workspace conventions)")
 			}
 		},
 	}
@@ -5376,16 +5504,16 @@ Conversation:
 
 	searchCmd := &cobra.Command{
 		Use:   "search [query]",
-		Short: "Semantic search across conversations using embeddings",
-		Long: `Search conversations using semantic similarity.
+		Short: "Semantic search across segments using embeddings",
+		Long: `Search segments using semantic similarity.
 
-Uses AI embeddings to find conversations that match the meaning
+Uses AI embeddings to find segments that match the meaning
 of your query, not just keyword matches.
 
 Examples:
-  comms search "when did we talk about moving"
-  comms search "restaurant recommendations" --channel imessage
-  comms search "project deadlines" --limit 5`,
+  cortex search "when did we talk about moving"
+  cortex search "restaurant recommendations" --channel imessage
+  cortex search "project deadlines" --limit 5`,
 		Args: cobra.MinimumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			type SearchResult struct {
@@ -5448,7 +5576,7 @@ Examples:
 			geminiClient := gemini.NewClient(apiKey)
 			model := searchModel
 			if model == "" {
-				model = "text-embedding-004"
+				model = "gemini-embedding-001"
 			}
 
 			queryEmbedding, err := geminiClient.EmbedContent(ctx, &gemini.EmbedContentRequest{
@@ -5483,9 +5611,9 @@ Examples:
 				       c.channel, c.thread_id, c.start_time, c.end_time, c.event_count,
 				       t.name as thread_name
 				FROM embeddings e
-				JOIN conversations c ON e.entity_id = c.id
+				JOIN segments c ON e.entity_id = c.id
 				LEFT JOIN threads t ON c.thread_id = t.id
-				WHERE e.entity_type = 'conversation' AND e.model = ?
+				WHERE e.entity_type = 'segment' AND e.model = ?
 			`
 			embArgs := []interface{}{model}
 
@@ -5576,8 +5704,8 @@ Examples:
 			} else {
 				fmt.Printf("Search results for: %q\n\n", queryText)
 				if len(results) == 0 {
-					fmt.Println("No matching conversations found.")
-					fmt.Println("\nTip: Make sure you have embeddings generated (run: comms compute enqueue embeddings && comms compute run)")
+					fmt.Println("No matching segments found.")
+					fmt.Println("\nTip: Make sure you have embeddings generated (run: cortex compute enqueue embeddings && cortex compute run)")
 				} else {
 					for i, r := range results {
 						timeStr := time.Unix(r.StartTime, 0).Format("2006-01-02 15:04")
@@ -5605,16 +5733,280 @@ Examples:
 
 	searchCmd.Flags().StringVar(&searchChannel, "channel", "", "Filter by channel (imessage, gmail, aix, etc.)")
 	searchCmd.Flags().IntVar(&searchLimit, "limit", 10, "Maximum number of results")
-	searchCmd.Flags().StringVar(&searchModel, "model", "text-embedding-004", "Embedding model to use")
+	searchCmd.Flags().StringVar(&searchModel, "model", "gemini-embedding-001", "Embedding model to use")
 	rootCmd.AddCommand(searchCmd)
+
+	// documents command - search document-style events
+	var docSearchChannels string
+	var docSearchLimit int
+	var docSearchModel string
+	var docSearchMinScore float64
+	var docSearchEmbeddings bool
+	var docSearchLexical bool
+	var docSearchTrack bool
+
+	documentsCmd := &cobra.Command{
+		Use:   "documents",
+		Short: "Search document-style events (skills, docs, memory, tools)",
+	}
+
+	documentsSearchCmd := &cobra.Command{
+		Use:   "search [query]",
+		Short: "Semantic search across documents",
+		Long: `Search document-style events using hybrid semantic + lexical scoring.
+
+Examples:
+  cortex documents search "send email"
+  cortex documents search "routing spec" --channel doc --limit 5
+  cortex documents search "whatsapp" --lexical-only`,
+		Args: cobra.MinimumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			queryText := strings.Join(args, " ")
+			if strings.TrimSpace(queryText) == "" {
+				if jsonOutput {
+					printJSON(map[string]any{"ok": false, "message": "Search query is required"})
+				} else {
+					fmt.Fprintln(os.Stderr, "Error: Search query is required")
+				}
+				os.Exit(1)
+			}
+
+			database, err := db.Open()
+			if err != nil {
+				if jsonOutput {
+					printJSON(map[string]any{"ok": false, "message": fmt.Sprintf("Failed to open database: %v", err)})
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				}
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			useEmbeddings := docSearchEmbeddings
+			useLexical := docSearchLexical
+			if !useEmbeddings && !useLexical {
+				useEmbeddings = true
+				useLexical = true
+			}
+
+			var embedder search.Embedder
+			if useEmbeddings {
+				apiKey := os.Getenv("GEMINI_API_KEY")
+				if apiKey == "" {
+					useEmbeddings = false
+					if !jsonOutput {
+						fmt.Fprintln(os.Stderr, "Warning: GEMINI_API_KEY not set, falling back to lexical search")
+					}
+				} else {
+					embedder = &search.GeminiEmbedder{Client: gemini.NewClient(apiKey)}
+				}
+			}
+
+			channels := []string{}
+			if strings.TrimSpace(docSearchChannels) != "" {
+				for _, ch := range strings.Split(docSearchChannels, ",") {
+					ch = strings.TrimSpace(ch)
+					if ch != "" {
+						channels = append(channels, ch)
+					}
+				}
+			}
+
+			searcher := search.NewSearcher(database, embedder)
+			resp, err := searcher.SearchDocuments(context.Background(), search.DocumentSearchRequest{
+				Query:          queryText,
+				Channels:       channels,
+				Limit:          docSearchLimit,
+				MinScore:       docSearchMinScore,
+				Model:          docSearchModel,
+				UseEmbeddings:  useEmbeddings,
+				UseLexical:     useLexical,
+				TrackRetrieval: docSearchTrack,
+			})
+			if err != nil {
+				if jsonOutput {
+					printJSON(map[string]any{"ok": false, "message": err.Error()})
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				}
+				os.Exit(1)
+			}
+
+			if jsonOutput {
+				printJSON(resp)
+				return
+			}
+
+			fmt.Printf("Document search results for: %q\n\n", queryText)
+			if len(resp.Results) == 0 {
+				fmt.Println("No matching documents found.")
+				return
+			}
+
+			for i, r := range resp.Results {
+				fmt.Printf("%d. [%.2f] %s (%s)\n", i+1, r.Score, r.DocKey, r.Channel)
+				if r.Title != "" {
+					fmt.Printf("   Title: %s\n", r.Title)
+				}
+				if r.Description != "" {
+					fmt.Printf("   Description: %s\n", r.Description)
+				}
+				if r.Snippet != "" {
+					fmt.Printf("   Snippet: %s\n", r.Snippet)
+				}
+				fmt.Println()
+			}
+		},
+	}
+
+	documentsSearchCmd.Flags().StringVar(&docSearchChannels, "channel", "", "Filter by channel (comma-separated)")
+	documentsSearchCmd.Flags().IntVar(&docSearchLimit, "limit", 10, "Maximum number of results")
+	documentsSearchCmd.Flags().Float64Var(&docSearchMinScore, "min-score", 0.0, "Minimum score threshold")
+	documentsSearchCmd.Flags().StringVar(&docSearchModel, "model", "gemini-embedding-001", "Embedding model to use")
+	documentsSearchCmd.Flags().BoolVar(&docSearchEmbeddings, "embeddings", true, "Enable embedding-based search")
+	documentsSearchCmd.Flags().BoolVar(&docSearchLexical, "lexical", true, "Enable lexical search")
+	documentsSearchCmd.Flags().BoolVar(&docSearchTrack, "track", false, "Track retrieval metrics")
+
+	// documents index - index skills and docs into document_heads
+	var indexSkillsPath string
+	
+	documentsIndexCmd := &cobra.Command{
+		Use:   "index",
+		Short: "Index skills and docs into document_heads",
+		Long: `Index skills from the nexus skills directory into document_heads for search.
+
+Examples:
+  cortex documents index
+  cortex documents index --skills-path ~/nexus/skills`,
+		Run: func(cmd *cobra.Command, args []string) {
+			type Result struct {
+				OK       bool   `json:"ok"`
+				Indexed  int    `json:"indexed"`
+				Skipped  int    `json:"skipped"`
+				Errors   int    `json:"errors"`
+				Duration string `json:"duration"`
+				Message  string `json:"message,omitempty"`
+			}
+
+			start := time.Now()
+
+			database, err := db.Open()
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to open database: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			// Determine skills path
+			skillsPath := indexSkillsPath
+			if skillsPath == "" {
+				home, _ := os.UserHomeDir()
+				skillsPath = filepath.Join(home, "nexus", "skills")
+			}
+
+			var indexed, skipped, errors int
+
+			// Walk skills directory
+			walkFn := func(path string, info os.FileInfo, walkErr error) error {
+				if walkErr != nil {
+					return nil
+				}
+				if info.IsDir() {
+					return nil
+				}
+				if filepath.Base(path) != "SKILL.md" {
+					return nil
+				}
+
+				content, err := os.ReadFile(path)
+				if err != nil {
+					errors++
+					return nil
+				}
+
+				// Extract skill name from path
+				dir := filepath.Dir(path)
+				skillName := filepath.Base(dir)
+				skillType := filepath.Base(filepath.Dir(dir)) // tools, guides, connectors
+
+				docKey := fmt.Sprintf("skill:%s", skillName)
+				title := skillName
+				description := fmt.Sprintf("%s skill (%s)", skillName, skillType)
+
+				input := documents.DocumentInput{
+					DocKey:        docKey,
+					Channel:       "skill",
+					Content:       string(content),
+					Title:         title,
+					Description:   description,
+					SourceAdapter: "nexus-skills",
+					Metadata: map[string]any{
+						"skill_type": skillType,
+						"path":       path,
+					},
+				}
+
+				result, err := documents.UpsertDocument(cmd.Context(), database, input)
+				if err != nil {
+					errors++
+					return nil
+				}
+
+				if result.Skipped {
+					skipped++
+				} else {
+					indexed++
+				}
+				return nil
+			}
+
+			if err := filepath.Walk(skillsPath, walkFn); err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Walk failed: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			result := Result{
+				OK:       true,
+				Indexed:  indexed,
+				Skipped:  skipped,
+				Errors:   errors,
+				Duration: time.Since(start).String(),
+			}
+
+			if jsonOutput {
+				printJSON(result)
+			} else {
+				fmt.Println("Document Indexing Results:")
+				fmt.Printf("  Indexed: %d\n", indexed)
+				fmt.Printf("  Skipped (unchanged): %d\n", skipped)
+				fmt.Printf("  Errors: %d\n", errors)
+				fmt.Printf("  Duration: %s\n", result.Duration)
+			}
+		},
+	}
+	documentsIndexCmd.Flags().StringVar(&indexSkillsPath, "skills-path", "", "Path to skills directory (default: ~/nexus/skills)")
+
+	documentsCmd.AddCommand(documentsSearchCmd)
+	documentsCmd.AddCommand(documentsIndexCmd)
+	rootCmd.AddCommand(documentsCmd)
 
 	// ==================== EXTRACT COMMAND ====================
 	extractCmd := &cobra.Command{
 		Use:   "extract",
-		Short: "Extract data from conversations using AI",
+		Short: "Extract data from segments using AI",
 	}
 
-	// extract pii - extract PII from conversations
+	// extract pii - extract PII from segments
 	var extractChannel string
 	var extractSince string
 	var extractConversation string
@@ -5625,19 +6017,19 @@ Examples:
 
 	extractPIICmd := &cobra.Command{
 		Use:   "pii",
-		Short: "Extract PII from conversations for identity resolution",
-		Long: `Extract all personally identifiable information from conversations
+		Short: "Extract PII from segments for identity resolution",
+		Long: `Extract all personally identifiable information from segments
 using AI analysis. Creates person_facts for identity resolution.
 
 Examples:
-  comms extract pii --channel imessage --since 30d
-  comms extract pii --conversation <conversation_id>
-  comms extract pii --person "Dad" --limit 50`,
+  cortex extract pii --channel imessage --since 30d
+  cortex extract pii --conversation <conversation_id>
+  cortex extract pii --person "Dad" --limit 50`,
 		Run: func(cmd *cobra.Command, args []string) {
 			type Result struct {
 				OK                     bool   `json:"ok"`
 				JobsEnqueued           int    `json:"jobs_enqueued"`
-				ConversationsToProcess int    `json:"conversations_to_process,omitempty"`
+				ConversationsToProcess int    `json:"segments_to_process,omitempty"`
 				Message                string `json:"message,omitempty"`
 			}
 
@@ -5653,9 +6045,9 @@ Examples:
 			}
 			defer database.Close()
 
-			// Build query to find conversations to process
+			// Build query to find segments to process
 			querySQL := `
-				SELECT c.id FROM conversations c
+				SELECT c.id FROM segments c
 				WHERE NOT EXISTS (
 					SELECT 1 FROM analysis_runs ar
 					JOIN analysis_types at ON ar.analysis_type_id = at.id
@@ -5713,7 +6105,7 @@ Examples:
 			}
 
 			if extractConversation != "" {
-				querySQL = `SELECT c.id FROM conversations c WHERE c.id = ?`
+				querySQL = `SELECT c.id FROM segments c WHERE c.id = ?`
 				queryArgs = []interface{}{extractConversation}
 				if hasDefinition {
 					querySQL += ` AND c.definition_id = ?`
@@ -5723,7 +6115,7 @@ Examples:
 
 			if extractPerson != "" {
 				querySQL = `
-					SELECT DISTINCT c.id FROM conversations c
+					SELECT DISTINCT c.id FROM segments c
 					JOIN conversation_events ce ON c.id = ce.conversation_id
 					JOIN event_participants ep ON ce.event_id = ep.event_id
 					JOIN persons p ON ep.person_id = p.id
@@ -5751,7 +6143,7 @@ Examples:
 			// Execute query
 			rows, err := database.Query(querySQL, queryArgs...)
 			if err != nil {
-				result := Result{OK: false, Message: fmt.Sprintf("Failed to query conversations: %v", err)}
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to query segments: %v", err)}
 				if jsonOutput {
 					printJSON(result)
 				} else {
@@ -5774,12 +6166,12 @@ Examples:
 				result := Result{
 					OK:                     true,
 					ConversationsToProcess: len(convIDs),
-					Message:                fmt.Sprintf("Would enqueue %d conversations for PII extraction", len(convIDs)),
+					Message:                fmt.Sprintf("Would enqueue %d segments for PII extraction", len(convIDs)),
 				}
 				if jsonOutput {
 					printJSON(result)
 				} else {
-					fmt.Printf("Dry run: would enqueue %d conversations for PII extraction\n", len(convIDs))
+					fmt.Printf("Dry run: would enqueue %d segments for PII extraction\n", len(convIDs))
 					if len(convIDs) > 0 && len(convIDs) <= 10 {
 						fmt.Println("\nConversations:")
 						for _, id := range convIDs {
@@ -5825,19 +6217,19 @@ Examples:
 				printJSON(result)
 			} else {
 				fmt.Printf("✓ Enqueued %d PII extraction jobs\n", count)
-				fmt.Println("\nRun 'comms compute run' to process the queue")
+				fmt.Println("\nRun 'cortex compute run' to process the queue")
 			}
 		},
 	}
 	extractPIICmd.Flags().StringVar(&extractChannel, "channel", "", "Filter by channel (imessage, gmail, all)")
-	extractPIICmd.Flags().StringVar(&extractSince, "since", "", "Only process conversations since (e.g., 30d, 7d, 2024-01-01)")
+	extractPIICmd.Flags().StringVar(&extractSince, "since", "", "Only process segments since (e.g., 30d, 7d, 2024-01-01)")
 	extractPIICmd.Flags().StringVar(&extractConversation, "conversation", "", "Process specific conversation ID")
-	extractPIICmd.Flags().StringVar(&extractPerson, "person", "", "Process conversations involving specific person")
+	extractPIICmd.Flags().StringVar(&extractPerson, "person", "", "Process segments involving specific person")
 	extractPIICmd.Flags().BoolVar(&extractDryRun, "dry-run", false, "Show what would be processed without enqueueing")
-	extractPIICmd.Flags().IntVar(&extractLimit, "limit", 0, "Limit number of conversations to process")
+	extractPIICmd.Flags().IntVar(&extractLimit, "limit", 0, "Limit number of segments to process")
 	extractPIICmd.Flags().StringVar(&extractDefinition, "definition", "", "Filter by conversation definition name")
 
-	// extract nexus-cli - extract nexus CLI invocations from conversations
+	// extract nexus-cli - extract nexus CLI invocations from segments
 	var extractNexusChannel string
 	var extractNexusSince string
 	var extractNexusConversation string
@@ -5851,13 +6243,13 @@ Examples:
 		Long: `Extract nexus CLI invocations from Cursor tool executions.
 
 Examples:
-  comms extract nexus-cli --channel cursor --since 15d
-  comms extract nexus-cli --definition cursor_session --since 15d`,
+  cortex extract nexus-cli --channel cursor --since 15d
+  cortex extract nexus-cli --definition cursor_session --since 15d`,
 		Run: func(cmd *cobra.Command, args []string) {
 			type Result struct {
 				OK                     bool   `json:"ok"`
 				JobsEnqueued           int    `json:"jobs_enqueued"`
-				ConversationsToProcess int    `json:"conversations_to_process,omitempty"`
+				ConversationsToProcess int    `json:"segments_to_process,omitempty"`
 				Message                string `json:"message,omitempty"`
 			}
 
@@ -5874,7 +6266,7 @@ Examples:
 			defer database.Close()
 
 			querySQL := `
-				SELECT c.id FROM conversations c
+				SELECT c.id FROM segments c
 				WHERE NOT EXISTS (
 					SELECT 1 FROM analysis_runs ar
 					JOIN analysis_types at ON ar.analysis_type_id = at.id
@@ -5931,7 +6323,7 @@ Examples:
 			}
 
 			if extractNexusConversation != "" {
-				querySQL = `SELECT c.id FROM conversations c WHERE c.id = ?`
+				querySQL = `SELECT c.id FROM segments c WHERE c.id = ?`
 				queryArgs = []interface{}{extractNexusConversation}
 				if hasDefinition {
 					querySQL += ` AND c.definition_id = ?`
@@ -5946,7 +6338,7 @@ Examples:
 
 			rows, err := database.Query(querySQL, queryArgs...)
 			if err != nil {
-				result := Result{OK: false, Message: fmt.Sprintf("Failed to query conversations: %v", err)}
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to query segments: %v", err)}
 				if jsonOutput {
 					printJSON(result)
 				} else {
@@ -5969,12 +6361,12 @@ Examples:
 				result := Result{
 					OK:                     true,
 					ConversationsToProcess: len(convIDs),
-					Message:                fmt.Sprintf("Would enqueue %d conversations for nexus CLI extraction", len(convIDs)),
+					Message:                fmt.Sprintf("Would enqueue %d segments for nexus CLI extraction", len(convIDs)),
 				}
 				if jsonOutput {
 					printJSON(result)
 				} else {
-					fmt.Printf("Dry run: would enqueue %d conversations for nexus CLI extraction\n", len(convIDs))
+					fmt.Printf("Dry run: would enqueue %d segments for nexus CLI extraction\n", len(convIDs))
 					if len(convIDs) > 0 && len(convIDs) <= 10 {
 						fmt.Println("\nConversations:")
 						for _, id := range convIDs {
@@ -6018,15 +6410,15 @@ Examples:
 				printJSON(result)
 			} else {
 				fmt.Printf("✓ Enqueued %d nexus CLI extraction jobs\n", count)
-				fmt.Println("\nRun 'comms compute run' to process the queue")
+				fmt.Println("\nRun 'cortex compute run' to process the queue")
 			}
 		},
 	}
 	extractNexusCmd.Flags().StringVar(&extractNexusChannel, "channel", "", "Filter by channel (cursor, etc.)")
-	extractNexusCmd.Flags().StringVar(&extractNexusSince, "since", "", "Only process conversations since (e.g., 15d, 7d, 2024-01-01)")
+	extractNexusCmd.Flags().StringVar(&extractNexusSince, "since", "", "Only process segments since (e.g., 15d, 7d, 2024-01-01)")
 	extractNexusCmd.Flags().StringVar(&extractNexusConversation, "conversation", "", "Process specific conversation ID")
 	extractNexusCmd.Flags().BoolVar(&extractNexusDryRun, "dry-run", false, "Show what would be processed without enqueueing")
-	extractNexusCmd.Flags().IntVar(&extractNexusLimit, "limit", 0, "Limit number of conversations to process")
+	extractNexusCmd.Flags().IntVar(&extractNexusLimit, "limit", 0, "Limit number of segments to process")
 	extractNexusCmd.Flags().StringVar(&extractNexusDefinition, "definition", "", "Filter by conversation definition name")
 
 	// extract terminal - extract terminal command invocations
@@ -6043,13 +6435,13 @@ Examples:
 		Long: `Extract terminal command invocations from Cursor tool executions.
 
 Examples:
-  comms extract terminal --channel cursor --since 15d
-  comms extract terminal --definition cursor_session --since 15d`,
+  cortex extract terminal --channel cursor --since 15d
+  cortex extract terminal --definition cursor_session --since 15d`,
 		Run: func(cmd *cobra.Command, args []string) {
 			type Result struct {
 				OK                     bool   `json:"ok"`
 				JobsEnqueued           int    `json:"jobs_enqueued"`
-				ConversationsToProcess int    `json:"conversations_to_process,omitempty"`
+				ConversationsToProcess int    `json:"segments_to_process,omitempty"`
 				Message                string `json:"message,omitempty"`
 			}
 
@@ -6066,7 +6458,7 @@ Examples:
 			defer database.Close()
 
 			querySQL := `
-				SELECT c.id FROM conversations c
+				SELECT c.id FROM segments c
 				WHERE NOT EXISTS (
 					SELECT 1 FROM analysis_runs ar
 					JOIN analysis_types at ON ar.analysis_type_id = at.id
@@ -6123,7 +6515,7 @@ Examples:
 			}
 
 			if extractTerminalConversation != "" {
-				querySQL = `SELECT c.id FROM conversations c WHERE c.id = ?`
+				querySQL = `SELECT c.id FROM segments c WHERE c.id = ?`
 				queryArgs = []interface{}{extractTerminalConversation}
 				if hasDefinition {
 					querySQL += ` AND c.definition_id = ?`
@@ -6138,7 +6530,7 @@ Examples:
 
 			rows, err := database.Query(querySQL, queryArgs...)
 			if err != nil {
-				result := Result{OK: false, Message: fmt.Sprintf("Failed to query conversations: %v", err)}
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to query segments: %v", err)}
 				if jsonOutput {
 					printJSON(result)
 				} else {
@@ -6161,12 +6553,12 @@ Examples:
 				result := Result{
 					OK:                     true,
 					ConversationsToProcess: len(convIDs),
-					Message:                fmt.Sprintf("Would enqueue %d conversations for terminal extraction", len(convIDs)),
+					Message:                fmt.Sprintf("Would enqueue %d segments for terminal extraction", len(convIDs)),
 				}
 				if jsonOutput {
 					printJSON(result)
 				} else {
-					fmt.Printf("Dry run: would enqueue %d conversations for terminal extraction\n", len(convIDs))
+					fmt.Printf("Dry run: would enqueue %d segments for terminal extraction\n", len(convIDs))
 					if len(convIDs) > 0 && len(convIDs) <= 10 {
 						fmt.Println("\nConversations:")
 						for _, id := range convIDs {
@@ -6210,15 +6602,15 @@ Examples:
 				printJSON(result)
 			} else {
 				fmt.Printf("✓ Enqueued %d terminal extraction jobs\n", count)
-				fmt.Println("\nRun 'comms compute run' to process the queue")
+				fmt.Println("\nRun 'cortex compute run' to process the queue")
 			}
 		},
 	}
 	extractTerminalCmd.Flags().StringVar(&extractTerminalChannel, "channel", "", "Filter by channel (cursor, etc.)")
-	extractTerminalCmd.Flags().StringVar(&extractTerminalSince, "since", "", "Only process conversations since (e.g., 15d, 7d, 2024-01-01)")
+	extractTerminalCmd.Flags().StringVar(&extractTerminalSince, "since", "", "Only process segments since (e.g., 15d, 7d, 2024-01-01)")
 	extractTerminalCmd.Flags().StringVar(&extractTerminalConversation, "conversation", "", "Process specific conversation ID")
 	extractTerminalCmd.Flags().BoolVar(&extractTerminalDryRun, "dry-run", false, "Show what would be processed without enqueueing")
-	extractTerminalCmd.Flags().IntVar(&extractTerminalLimit, "limit", 0, "Limit number of conversations to process")
+	extractTerminalCmd.Flags().IntVar(&extractTerminalLimit, "limit", 0, "Limit number of segments to process")
 	extractTerminalCmd.Flags().StringVar(&extractTerminalDefinition, "definition", "", "Filter by conversation definition name")
 
 	// extract sync - sync facets to person_facts
@@ -6293,7 +6685,7 @@ Examples:
 		Run: func(cmd *cobra.Command, args []string) {
 			type Result struct {
 				OK                 bool   `json:"ok"`
-				TotalConversations int    `json:"total_conversations"`
+				TotalConversations int    `json:"total_segments"`
 				Pending            int    `json:"pending"`
 				Running            int    `json:"running"`
 				Completed          int    `json:"completed"`
@@ -6315,7 +6707,7 @@ Examples:
 			defer database.Close()
 
 			var totalConvs int
-			database.QueryRow(`SELECT COUNT(*) FROM conversations`).Scan(&totalConvs)
+			database.QueryRow(`SELECT COUNT(*) FROM segments`).Scan(&totalConvs)
 
 			var pending, running, completed, failed, blocked int
 			database.QueryRow(`
@@ -6358,7 +6750,7 @@ Examples:
 				printJSON(result)
 			} else {
 				fmt.Println("PII Extraction Status:")
-				fmt.Printf("  Total conversations: %d\n", totalConvs)
+				fmt.Printf("  Total segments: %d\n", totalConvs)
 				notStarted := totalConvs - pending - running - completed - failed - blocked
 				fmt.Printf("  Not started: %d\n", notStarted)
 				fmt.Printf("  Pending: %d\n", pending)
@@ -6370,11 +6762,115 @@ Examples:
 		},
 	}
 
+	// extract aix-metadata - extract facets from AIX metadata
+	var extractAIXChannel string
+	var extractAIXSince string
+
+	extractAIXMetadataCmd := &cobra.Command{
+		Use:   "aix-metadata",
+		Short: "Extract facets from AIX event metadata",
+		Long: `Extract structured facets from AIX (Cursor) event metadata.
+
+This extracts:
+- File references (relevantFiles)
+- Tool invocations (toolFormerData)
+- Mode (agentic vs normal)
+- Capabilities used
+
+Examples:
+  cortex extract aix-metadata --channel cursor
+  cortex extract aix-metadata --since 7d`,
+		Run: func(cmd *cobra.Command, args []string) {
+			type Result struct {
+				OK              bool   `json:"ok"`
+				EventsProcessed int    `json:"events_processed"`
+				SegmentsCreated int    `json:"segments_created"`
+				FacetsCreated   int    `json:"facets_created"`
+				Duration        string `json:"duration"`
+				Message         string `json:"message,omitempty"`
+			}
+
+			database, err := db.Open()
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Failed to open database: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			// Parse since flag
+			var sinceTS int64
+			if extractAIXSince != "" {
+				var sinceTime time.Time
+				if strings.HasSuffix(extractAIXSince, "d") {
+					var d int
+					fmt.Sscanf(extractAIXSince, "%dd", &d)
+					if d > 0 {
+						sinceTime = time.Now().AddDate(0, 0, -d)
+					}
+				} else if strings.HasSuffix(extractAIXSince, "h") {
+					var h int
+					fmt.Sscanf(extractAIXSince, "%dh", &h)
+					if h > 0 {
+						sinceTime = time.Now().Add(-time.Duration(h) * time.Hour)
+					}
+				} else {
+					sinceTime, _ = time.Parse("2006-01-02", extractAIXSince)
+				}
+				if !sinceTime.IsZero() {
+					sinceTS = sinceTime.Unix()
+				}
+			}
+
+			channel := extractAIXChannel
+			if channel == "" {
+				channel = "cursor"
+			}
+
+			extractor := adapters.NewAIXFacetExtractor(database)
+			extractResult, err := extractor.ExtractFacetsFromMetadata(cmd.Context(), channel, sinceTS)
+			if err != nil {
+				result := Result{OK: false, Message: fmt.Sprintf("Extraction failed: %v", err)}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			result := Result{
+				OK:              true,
+				EventsProcessed: extractResult.EventsProcessed,
+				SegmentsCreated: extractResult.SegmentsCreated,
+				FacetsCreated:   extractResult.FacetsCreated,
+				Duration:        extractResult.Duration.String(),
+			}
+
+			if jsonOutput {
+				printJSON(result)
+			} else {
+				fmt.Println("AIX Metadata Extraction Results:")
+				fmt.Printf("  Events processed: %d\n", result.EventsProcessed)
+				fmt.Printf("  Segments created: %d\n", result.SegmentsCreated)
+				fmt.Printf("  Facets created: %d\n", result.FacetsCreated)
+				fmt.Printf("  Duration: %s\n", result.Duration)
+			}
+		},
+	}
+	extractAIXMetadataCmd.Flags().StringVar(&extractAIXChannel, "channel", "cursor", "Channel to extract from")
+	extractAIXMetadataCmd.Flags().StringVar(&extractAIXSince, "since", "", "Only process events since (e.g., 30d, 7d)")
+
 	extractCmd.AddCommand(extractPIICmd)
 	extractCmd.AddCommand(extractNexusCmd)
 	extractCmd.AddCommand(extractTerminalCmd)
 	extractCmd.AddCommand(extractSyncCmd)
 	extractCmd.AddCommand(extractStatusCmd)
+	extractCmd.AddCommand(extractAIXMetadataCmd)
 	rootCmd.AddCommand(extractCmd)
 
 	if err := rootCmd.Execute(); err != nil {

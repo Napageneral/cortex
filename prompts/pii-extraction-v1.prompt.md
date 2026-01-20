@@ -8,7 +8,7 @@ Extract ALL personally identifiable information from a conversation chunk. This 
 
 - **Channel**: The communication channel (iMessage, Gmail, Discord, etc.)
 - **Primary Contact**: The person whose conversation this is (name + identifier)
-- **User**: The owner of the comms database
+- **User**: The owner of the cortex database
 - **Messages**: A chunk of conversation (typically 50-100 messages or a logical conversation unit)
 
 ## Task
@@ -316,128 +316,25 @@ Extract any of the following categories if present:
       "end": "2024-01-15T23:59:59Z"
     }
   },
-  "persons": [
+  "facts": [
     {
-      "reference": "Dad",
-      "is_primary_contact": true,
-      "confidence_is_primary": 0.99,
-      "pii": {
-        "core_identity": {
-          "full_legal_name": {
-            "value": "James Brandt",
-            "confidence": "high",
-            "evidence": ["meeting up with Jim and Janet", "Jim@napageneralstore.com"],
-            "source": "inferred from email + nickname"
-          },
-          "nicknames": {
-            "value": ["Jim", "Dad"],
-            "confidence": "high",
-            "evidence": ["labeled as Dad in contacts", "refers to self as Jim"]
-          }
-        },
-        "contact_information": {
-          "email_work": {
-            "value": "jim@napageneralstore.com",
-            "confidence": "high",
-            "evidence": ["the recovery email is my jim@napageneralstore.com"],
-            "self_disclosed": true
-          },
-          "email_personal": {
-            "value": "napageneral@gmail.com",
-            "confidence": "high", 
-            "evidence": ["LastPass has all my passwords. Napageneral@gmail.com"],
-            "self_disclosed": true
-          }
-        },
-        "relationships": {
-          "spouse": {
-            "value": "Jill",
-            "confidence": "medium",
-            "evidence": ["mentioned in family context"],
-            "related_person_ref": "Mom"
-          },
-          "children": {
-            "value": ["Tyler"],
-            "confidence": "high",
-            "evidence": ["conversation is with son"]
-          }
-        },
-        "professional": {
-          "business_owned": {
-            "value": ["Napa General Store"],
-            "confidence": "high",
-            "evidence": ["jim@napageneralstore.com", "owns the store", "napageneral username"]
-          },
-          "business_role": {
-            "value": "Owner",
-            "confidence": "high",
-            "evidence": ["runs the store", "his business"]
-          },
-          "profession": {
-            "value": "Small Business Owner / Restaurateur",
-            "confidence": "medium",
-            "evidence": ["inferred from business type"]
-          }
-        },
-        "location_presence": {
-          "location_current": {
-            "value": "Napa, CA",
-            "confidence": "high",
-            "evidence": ["napageneralstore.com", "Napa General Store"]
-          },
-          "location_vacation": {
-            "value": "Harwich, MA",
-            "confidence": "high",
-            "evidence": ["PC in the upstairs guestroom in Harwich"]
-          }
-        },
-        "digital_identity": {
-          "username_unknown": {
-            "value": "napageneral",
-            "confidence": "high",
-            "evidence": ["napageneral is my username"],
-            "self_disclosed": true
-          }
-        }
-      },
-      "sensitive_flags": [
-        {
-          "field": "login_credentials",
-          "note": "Password was shared - do not store",
-          "evidence": "Password in next text"
-        }
-      ]
+      "subject_kind": "primary_contact",
+      "subject_ref": "Dad",
+      "category": "core_identity",
+      "fact_type": "full_legal_name",
+      "value": "James Brandt",
+      "confidence": "high",
+      "evidence": "meeting up with Jim and Janet; Jim@napageneralstore.com",
+      "source": "inferred from email + nickname"
     },
     {
-      "reference": "Janet",
-      "is_primary_contact": false,
-      "confidence_is_primary": 0.0,
-      "pii": {
-        "core_identity": {
-          "given_name": {
-            "value": "Janet",
-            "confidence": "high",
-            "evidence": ["meeting up with Jim and Janet"]
-          }
-        },
-        "relationships": {
-          "friend_of": {
-            "value": "Dad/Jim",
-            "confidence": "medium",
-            "evidence": ["traveling together"]
-          }
-        }
-      }
-    }
-  ],
-  "new_identity_candidates": [
-    {
-      "reference": "Janet",
-      "known_facts": {
-        "given_name": "Janet",
-        "relationship_to_primary": "friend/travel companion"
-      },
-      "note": "New person mentioned, may be worth creating identity node"
+      "subject_kind": "third_party",
+      "subject_ref": "Janet",
+      "category": "core_identity",
+      "fact_type": "given_name",
+      "value": "Janet",
+      "confidence": "high",
+      "evidence": "meeting up with Jim and Janet"
     }
   ],
   "unattributed_facts": [
@@ -478,8 +375,15 @@ Extract any of the following categories if present:
    - **medium**: Strongly implied or partially stated
    - **low**: Inferred or uncertain
 10. **Don't hallucinate** - Only extract what's actually in the messages
+11. **Facts array schema**:
+    - Every fact MUST include: `subject_kind`, `subject_ref`, `category`, `fact_type`, `value`, `confidence`, `evidence`
+    - `subject_kind` MUST be one of: `user`, `primary_contact`, `third_party`
+    - `value` MUST be a single string (one fact per value)
+    - `evidence` MUST be a single string of exact message text
+      (use `; ` to join multiple evidence quotes)
+    - Optional fields: `self_disclosed`, `source`, `related_person_ref`, `note`
 
 ---
 
 ## Conversation
-{{{conversation_text}}}
+{{{segment_text}}}

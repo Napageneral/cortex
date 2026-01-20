@@ -88,7 +88,7 @@ func normalizePhoneEve(s string) string {
 	return out
 }
 
-func (e *EveAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (SyncResult, error) {
+func (e *EveAdapter) Sync(ctx context.Context, cortexDB *sql.DB, full bool) (SyncResult, error) {
 	startTime := time.Now()
 	result := SyncResult{}
 
@@ -99,32 +99,32 @@ func (e *EveAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sync
 	}
 	defer eveDB.Close()
 
-	// Enable foreign keys on comms DB
-	if _, err := commsDB.Exec("PRAGMA foreign_keys = ON"); err != nil {
+	// Enable foreign keys on cortex DB
+	if _, err := cortexDB.Exec("PRAGMA foreign_keys = ON"); err != nil {
 		return result, fmt.Errorf("failed to enable foreign keys: %w", err)
 	}
 	// Avoid transient SQLITE_BUSY errors during large writes.
-	_, _ = commsDB.Exec("PRAGMA busy_timeout = 5000")
+	_, _ = cortexDB.Exec("PRAGMA busy_timeout = 5000")
 	// Prefer WAL for ingestion performance (safe default for SQLite).
-	_, _ = commsDB.Exec("PRAGMA journal_mode = WAL")
-	_, _ = commsDB.Exec("PRAGMA synchronous = NORMAL")
+	_, _ = cortexDB.Exec("PRAGMA journal_mode = WAL")
+	_, _ = cortexDB.Exec("PRAGMA synchronous = NORMAL")
 	// Aggressive full-sync pragmas (speed > durability during import).
-	// NOTE: If the machine crashes mid-import, the comms DB could be left in a bad state.
+	// NOTE: If the machine crashes mid-import, the cortex DB could be left in a bad state.
 	// For full rebuilds, this is an acceptable tradeoff for performance.
 	if full {
-		_, _ = commsDB.Exec("PRAGMA synchronous = OFF")
-		_, _ = commsDB.Exec("PRAGMA temp_store = MEMORY")
-		_, _ = commsDB.Exec("PRAGMA cache_size = -200000")        // ~200MB
-		_, _ = commsDB.Exec("PRAGMA mmap_size = 268435456")       // 256MB
-		_, _ = commsDB.Exec("PRAGMA wal_autocheckpoint = 1000000") // reduce checkpoints
+		_, _ = cortexDB.Exec("PRAGMA synchronous = OFF")
+		_, _ = cortexDB.Exec("PRAGMA temp_store = MEMORY")
+		_, _ = cortexDB.Exec("PRAGMA cache_size = -200000")        // ~200MB
+		_, _ = cortexDB.Exec("PRAGMA mmap_size = 268435456")       // 256MB
+		_, _ = cortexDB.Exec("PRAGMA wal_autocheckpoint = 1000000") // reduce checkpoints
 	}
 	// Keep correctness while reducing per-statement overhead.
-	_, _ = commsDB.Exec("PRAGMA defer_foreign_keys = ON")
+	_, _ = cortexDB.Exec("PRAGMA defer_foreign_keys = ON")
 
 	// Get sync watermark (last synced timestamp)
 	var lastSyncTimestamp int64
 	if !full {
-		row := commsDB.QueryRow("SELECT last_sync_at FROM sync_watermarks WHERE adapter = ?", e.Name())
+		row := cortexDB.QueryRow("SELECT last_sync_at FROM sync_watermarks WHERE adapter = ?", e.Name())
 		if err := row.Scan(&lastSyncTimestamp); err != nil && err != sql.ErrNoRows {
 			return result, fmt.Errorf("failed to get sync watermark: %w", err)
 		}
@@ -132,7 +132,7 @@ func (e *EveAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sync
 
 	// Sync contacts first (to establish person/identity mappings)
 	contactsStart := time.Now()
-	personsCreated, contactMap, mePersonID, perfContacts, err := e.syncContacts(ctx, eveDB, commsDB)
+	personsCreated, contactMap, mePersonID, perfContacts, err := e.syncContacts(ctx, eveDB, cortexDB)
 	if err != nil {
 		return result, fmt.Errorf("failed to sync contacts: %w", err)
 	}
@@ -147,7 +147,7 @@ func (e *EveAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sync
 
 	// Sync chats/threads (to establish thread metadata)
 	chatsStart := time.Now()
-	threadsCreated, threadsUpdated, perfChats, err := e.syncChats(ctx, eveDB, commsDB)
+	threadsCreated, threadsUpdated, perfChats, err := e.syncChats(ctx, eveDB, cortexDB)
 	if err != nil {
 		return result, fmt.Errorf("failed to sync chats: %w", err)
 	}
@@ -160,7 +160,7 @@ func (e *EveAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sync
 
 	// Sync messages
 	messagesStart := time.Now()
-	eventsCreated, eventsUpdated, maxImportedTimestamp, perfMessages, err := e.syncMessages(ctx, eveDB, commsDB, lastSyncTimestamp, contactMap, mePersonID)
+	eventsCreated, eventsUpdated, maxImportedTimestamp, perfMessages, err := e.syncMessages(ctx, eveDB, cortexDB, lastSyncTimestamp, contactMap, mePersonID)
 	if err != nil {
 		return result, fmt.Errorf("failed to sync messages: %w", err)
 	}
@@ -173,7 +173,7 @@ func (e *EveAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sync
 
 	// Sync attachments
 	attachmentsStart := time.Now()
-	attachmentsCreated, attachmentsUpdated, perfAttachments, err := e.syncAttachments(ctx, eveDB, commsDB, lastSyncTimestamp)
+	attachmentsCreated, attachmentsUpdated, perfAttachments, err := e.syncAttachments(ctx, eveDB, cortexDB, lastSyncTimestamp)
 	if err != nil {
 		return result, fmt.Errorf("failed to sync attachments: %w", err)
 	}
@@ -186,7 +186,7 @@ func (e *EveAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sync
 
 	// Sync reactions
 	reactionsStart := time.Now()
-	reactionsCreated, reactionsUpdated, perfReactions, err := e.syncReactions(ctx, eveDB, commsDB, lastSyncTimestamp, contactMap, mePersonID)
+	reactionsCreated, reactionsUpdated, perfReactions, err := e.syncReactions(ctx, eveDB, cortexDB, lastSyncTimestamp, contactMap, mePersonID)
 	if err != nil {
 		return result, fmt.Errorf("failed to sync reactions: %w", err)
 	}
@@ -204,7 +204,7 @@ func (e *EveAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sync
 	if maxImportedTimestamp > watermark {
 		watermark = maxImportedTimestamp
 	}
-	_, err = commsDB.Exec(`
+	_, err = cortexDB.Exec(`
 		INSERT INTO sync_watermarks (adapter, last_sync_at)
 		VALUES (?, ?)
 		ON CONFLICT(adapter) DO UPDATE SET last_sync_at = excluded.last_sync_at
@@ -221,14 +221,14 @@ func (e *EveAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sync
 	return result, nil
 }
 
-// syncContacts syncs Eve contacts to comms persons and identities
-func (e *EveAdapter) syncContacts(ctx context.Context, eveDB, commsDB *sql.DB) (personsCreated int, contactMap map[int64]string, mePersonID string, perf map[string]string, err error) {
+// syncContacts syncs Eve contacts to cortex persons and identities
+func (e *EveAdapter) syncContacts(ctx context.Context, eveDB, cortexDB *sql.DB) (personsCreated int, contactMap map[int64]string, mePersonID string, perf map[string]string, err error) {
 	perf = map[string]string{}
 
 	// Seed "me" from Eve's rich whoami info (authoritative identity set: phones/emails/handles).
 	// This is the key link that allows other adapters (aix/gmail/...) to attach to a cohesive user.
 	wStart := time.Now()
-	meCreated, meID, err := e.syncWhoami(ctx, eveDB, commsDB)
+	meCreated, meID, err := e.syncWhoami(ctx, eveDB, cortexDB)
 	if err != nil {
 		return 0, nil, "", perf, err
 	}
@@ -256,13 +256,13 @@ func (e *EveAdapter) syncContacts(ctx context.Context, eveDB, commsDB *sql.DB) (
 	perf["query"] = time.Since(qStart).String()
 
 	personsCreated = meCreated
-	contactMap = make(map[int64]string) // Eve contact_id -> comms person_id
+	contactMap = make(map[int64]string) // Eve contact_id -> cortex person_id
 
 	// Bulk write in a single transaction for SQLite performance.
 	txStart := time.Now()
-	tx, err := commsDB.Begin()
+	tx, err := cortexDB.Begin()
 	if err != nil {
-		return personsCreated, contactMap, mePersonID, perf, fmt.Errorf("begin comms tx: %w", err)
+		return personsCreated, contactMap, mePersonID, perf, fmt.Errorf("begin cortex tx: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -349,13 +349,13 @@ func (e *EveAdapter) syncContacts(ctx context.Context, eveDB, commsDB *sql.DB) (
 		return personsCreated, contactMap, mePersonID, perf, err
 	}
 	if err := tx.Commit(); err != nil {
-		return personsCreated, contactMap, mePersonID, perf, fmt.Errorf("commit comms tx: %w", err)
+		return personsCreated, contactMap, mePersonID, perf, fmt.Errorf("commit cortex tx: %w", err)
 	}
 	perf["tx_commit"] = time.Since(txStart).String()
 	return personsCreated, contactMap, mePersonID, perf, nil
 }
 
-func (e *EveAdapter) syncWhoami(ctx context.Context, eveDB, commsDB *sql.DB) (personsCreated int, mePersonID string, err error) {
+func (e *EveAdapter) syncWhoami(ctx context.Context, eveDB, cortexDB *sql.DB) (personsCreated int, mePersonID string, err error) {
 	type whoamiJSON struct {
 		OK     bool     `json:"ok"`
 		Name   string   `json:"name"`
@@ -365,6 +365,9 @@ func (e *EveAdapter) syncWhoami(ctx context.Context, eveDB, commsDB *sql.DB) (pe
 
 	findEveBin := func() (string, bool) {
 		// Explicit override (best for testing + portability).
+		if p := os.Getenv("CORTEX_EVE_BIN"); p != "" {
+			return p, true
+		}
 		if p := os.Getenv("COMMS_EVE_BIN"); p != "" {
 			return p, true
 		}
@@ -409,8 +412,8 @@ func (e *EveAdapter) syncWhoami(ctx context.Context, eveDB, commsDB *sql.DB) (pe
 		if w.OK {
 			now := time.Now().Unix()
 
-			// Find or create the comms "me" person.
-			_ = commsDB.QueryRow("SELECT id FROM persons WHERE is_me = 1 LIMIT 1").Scan(&mePersonID)
+			// Find or create the cortex "me" person.
+			_ = cortexDB.QueryRow("SELECT id FROM persons WHERE is_me = 1 LIMIT 1").Scan(&mePersonID)
 
 			bestName := w.Name
 			if bestName == "" {
@@ -419,7 +422,7 @@ func (e *EveAdapter) syncWhoami(ctx context.Context, eveDB, commsDB *sql.DB) (pe
 
 			if mePersonID == "" {
 				mePersonID = uuid.New().String()
-				if _, err := commsDB.Exec(`
+				if _, err := cortexDB.Exec(`
 					INSERT INTO persons (id, canonical_name, is_me, created_at, updated_at)
 					VALUES (?, ?, 1, ?, ?)
 				`, mePersonID, bestName, now, now); err != nil {
@@ -428,19 +431,19 @@ func (e *EveAdapter) syncWhoami(ctx context.Context, eveDB, commsDB *sql.DB) (pe
 				personsCreated++
 			} else {
 				// Best-effort: keep canonical_name fresh if it was a placeholder.
-				_, _ = commsDB.Exec(
+				_, _ = cortexDB.Exec(
 					`UPDATE persons SET canonical_name = ?, updated_at = ? WHERE id = ? AND (canonical_name = '' OR canonical_name = 'Me' OR canonical_name = 'Unknown')`,
 					bestName, now, mePersonID,
 				)
 			}
 
-			// Upsert phone/email identities onto the comms me person.
+			// Upsert phone/email identities onto the cortex me person.
 			for _, p := range w.Phones {
 				if p == "" {
 					continue
 				}
 				identityID := uuid.New().String()
-				if _, err := commsDB.Exec(`
+				if _, err := cortexDB.Exec(`
 					INSERT INTO identities (id, person_id, channel, identifier, created_at)
 					VALUES (?, ?, ?, ?, ?)
 					ON CONFLICT(channel, identifier) DO UPDATE SET person_id = excluded.person_id
@@ -453,7 +456,7 @@ func (e *EveAdapter) syncWhoami(ctx context.Context, eveDB, commsDB *sql.DB) (pe
 					continue
 				}
 				identityID := uuid.New().String()
-				if _, err := commsDB.Exec(`
+				if _, err := cortexDB.Exec(`
 					INSERT INTO identities (id, person_id, channel, identifier, created_at)
 					VALUES (?, ?, ?, ?, ?)
 					ON CONFLICT(channel, identifier) DO UPDATE SET person_id = excluded.person_id
@@ -466,8 +469,8 @@ func (e *EveAdapter) syncWhoami(ctx context.Context, eveDB, commsDB *sql.DB) (pe
 		}
 	}
 
-	// Find or create the comms "me" person.
-	_ = commsDB.QueryRow("SELECT id FROM persons WHERE is_me = 1 LIMIT 1").Scan(&mePersonID)
+	// Find or create the cortex "me" person.
+	_ = cortexDB.QueryRow("SELECT id FROM persons WHERE is_me = 1 LIMIT 1").Scan(&mePersonID)
 
 	rows, err := eveDB.Query(`
 		SELECT
@@ -534,7 +537,7 @@ func (e *EveAdapter) syncWhoami(ctx context.Context, eveDB, commsDB *sql.DB) (pe
 	now := time.Now().Unix()
 	if mePersonID == "" {
 		mePersonID = uuid.New().String()
-		if _, err := commsDB.Exec(`
+		if _, err := cortexDB.Exec(`
 			INSERT INTO persons (id, canonical_name, is_me, created_at, updated_at)
 			VALUES (?, ?, 1, ?, ?)
 		`, mePersonID, bestName, now, now); err != nil {
@@ -543,15 +546,15 @@ func (e *EveAdapter) syncWhoami(ctx context.Context, eveDB, commsDB *sql.DB) (pe
 		personsCreated++
 	} else {
 		// Best-effort: keep canonical_name fresh if it was a placeholder.
-		_, _ = commsDB.Exec(`UPDATE persons SET canonical_name = ?, updated_at = ? WHERE id = ? AND (canonical_name = '' OR canonical_name = 'Me' OR canonical_name = 'Unknown')`,
+		_, _ = cortexDB.Exec(`UPDATE persons SET canonical_name = ?, updated_at = ? WHERE id = ? AND (canonical_name = '' OR canonical_name = 'Me' OR canonical_name = 'Unknown')`,
 			bestName, now, mePersonID,
 		)
 	}
 
-	// Upsert all whoami identifiers onto the comms me person.
+	// Upsert all whoami identifiers onto the cortex me person.
 	for _, it := range idents {
 		identityID := uuid.New().String()
-		_, err := commsDB.Exec(`
+		_, err := cortexDB.Exec(`
 			INSERT INTO identities (id, person_id, channel, identifier, created_at)
 			VALUES (?, ?, ?, ?, ?)
 			ON CONFLICT(channel, identifier) DO UPDATE SET person_id = excluded.person_id
@@ -564,8 +567,8 @@ func (e *EveAdapter) syncWhoami(ctx context.Context, eveDB, commsDB *sql.DB) (pe
 	return personsCreated, mePersonID, nil
 }
 
-// syncChats syncs Eve chats to comms threads
-func (e *EveAdapter) syncChats(ctx context.Context, eveDB, commsDB *sql.DB) (threadsCreated int, threadsUpdated int, perf map[string]string, err error) {
+// syncChats syncs Eve chats to cortex threads
+func (e *EveAdapter) syncChats(ctx context.Context, eveDB, cortexDB *sql.DB) (threadsCreated int, threadsUpdated int, perf map[string]string, err error) {
 	_ = ctx
 	perf = map[string]string{}
 
@@ -588,9 +591,9 @@ func (e *EveAdapter) syncChats(ctx context.Context, eveDB, commsDB *sql.DB) (thr
 
 	// Bulk write in a single transaction for SQLite performance
 	txStart := time.Now()
-	tx, err := commsDB.Begin()
+	tx, err := cortexDB.Begin()
 	if err != nil {
-		return 0, 0, perf, fmt.Errorf("begin comms tx: %w", err)
+		return 0, 0, perf, fmt.Errorf("begin cortex tx: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -665,14 +668,14 @@ func (e *EveAdapter) syncChats(ctx context.Context, eveDB, commsDB *sql.DB) (thr
 		return threadsCreated, threadsUpdated, perf, err
 	}
 	if err := tx.Commit(); err != nil {
-		return threadsCreated, threadsUpdated, perf, fmt.Errorf("commit comms tx: %w", err)
+		return threadsCreated, threadsUpdated, perf, fmt.Errorf("commit cortex tx: %w", err)
 	}
 	perf["tx_commit"] = time.Since(txStart).String()
 	return threadsCreated, threadsUpdated, perf, nil
 }
 
-// syncMessages syncs Eve messages to comms events
-func (e *EveAdapter) syncMessages(ctx context.Context, eveDB, commsDB *sql.DB, lastSyncTimestamp int64, contactMap map[int64]string, mePersonID string) (created int, updated int, maxImportedTimestamp int64, perf map[string]string, err error) {
+// syncMessages syncs Eve messages to cortex events
+func (e *EveAdapter) syncMessages(ctx context.Context, eveDB, cortexDB *sql.DB, lastSyncTimestamp int64, contactMap map[int64]string, mePersonID string) (created int, updated int, maxImportedTimestamp int64, perf map[string]string, err error) {
 	_ = ctx
 	perf = map[string]string{}
 
@@ -712,9 +715,9 @@ func (e *EveAdapter) syncMessages(ctx context.Context, eveDB, commsDB *sql.DB, l
 
 	// Bulk write in a single transaction for SQLite performance.
 	txStart := time.Now()
-	tx, err := commsDB.Begin()
+	tx, err := cortexDB.Begin()
 	if err != nil {
-		return 0, 0, 0, perf, fmt.Errorf("begin comms tx: %w", err)
+		return 0, 0, 0, perf, fmt.Errorf("begin cortex tx: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -840,14 +843,14 @@ func (e *EveAdapter) syncMessages(ctx context.Context, eveDB, commsDB *sql.DB, l
 		return created, updated, maxImportedTimestamp, perf, err
 	}
 	if err := tx.Commit(); err != nil {
-		return created, updated, maxImportedTimestamp, perf, fmt.Errorf("commit comms tx: %w", err)
+		return created, updated, maxImportedTimestamp, perf, fmt.Errorf("commit cortex tx: %w", err)
 	}
 	perf["tx_commit"] = time.Since(txStart).String()
 	return created, updated, maxImportedTimestamp, perf, nil
 }
 
-// syncAttachments syncs Eve attachments to comms attachments table
-func (e *EveAdapter) syncAttachments(ctx context.Context, eveDB, commsDB *sql.DB, lastSyncTimestamp int64) (created int, updated int, perf map[string]string, err error) {
+// syncAttachments syncs Eve attachments to cortex attachments table
+func (e *EveAdapter) syncAttachments(ctx context.Context, eveDB, cortexDB *sql.DB, lastSyncTimestamp int64) (created int, updated int, perf map[string]string, err error) {
 	_ = ctx
 	perf = map[string]string{}
 
@@ -882,9 +885,9 @@ func (e *EveAdapter) syncAttachments(ctx context.Context, eveDB, commsDB *sql.DB
 
 	// Bulk write in a single transaction for SQLite performance
 	txStart := time.Now()
-	tx, err := commsDB.Begin()
+	tx, err := cortexDB.Begin()
 	if err != nil {
-		return 0, 0, perf, fmt.Errorf("begin comms tx: %w", err)
+		return 0, 0, perf, fmt.Errorf("begin cortex tx: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -919,7 +922,7 @@ func (e *EveAdapter) syncAttachments(ctx context.Context, eveDB, commsDB *sql.DB
 			return created, updated, perf, fmt.Errorf("failed to scan attachment row: %w", err)
 		}
 
-		// Build comms event ID from message GUID
+		// Build cortex event ID from message GUID
 		eventID := adapterPrefix + messageGuid.String
 
 		// Derive media_type from mime_type and is_sticker flag
@@ -980,14 +983,14 @@ func (e *EveAdapter) syncAttachments(ctx context.Context, eveDB, commsDB *sql.DB
 		return created, updated, perf, err
 	}
 	if err := tx.Commit(); err != nil {
-		return created, updated, perf, fmt.Errorf("commit comms tx: %w", err)
+		return created, updated, perf, fmt.Errorf("commit cortex tx: %w", err)
 	}
 	perf["tx_commit"] = time.Since(txStart).String()
 	return created, updated, perf, nil
 }
 
-// syncReactions syncs Eve reactions to comms events
-func (e *EveAdapter) syncReactions(ctx context.Context, eveDB, commsDB *sql.DB, lastSyncTimestamp int64, contactMap map[int64]string, mePersonID string) (created int, updated int, perf map[string]string, err error) {
+// syncReactions syncs Eve reactions to cortex events
+func (e *EveAdapter) syncReactions(ctx context.Context, eveDB, cortexDB *sql.DB, lastSyncTimestamp int64, contactMap map[int64]string, mePersonID string) (created int, updated int, perf map[string]string, err error) {
 	_ = ctx
 	perf = map[string]string{}
 
@@ -1022,9 +1025,9 @@ func (e *EveAdapter) syncReactions(ctx context.Context, eveDB, commsDB *sql.DB, 
 
 	// Bulk write in a single transaction for SQLite performance
 	txStart := time.Now()
-	tx, err := commsDB.Begin()
+	tx, err := cortexDB.Begin()
 	if err != nil {
-		return 0, 0, perf, fmt.Errorf("begin comms tx: %w", err)
+		return 0, 0, perf, fmt.Errorf("begin cortex tx: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -1135,7 +1138,7 @@ func (e *EveAdapter) syncReactions(ctx context.Context, eveDB, commsDB *sql.DB, 
 		return created, updated, perf, err
 	}
 	if err := tx.Commit(); err != nil {
-		return created, updated, perf, fmt.Errorf("commit comms tx: %w", err)
+		return created, updated, perf, fmt.Errorf("commit cortex tx: %w", err)
 	}
 	perf["tx_commit"] = time.Since(txStart).String()
 	return created, updated, perf, nil

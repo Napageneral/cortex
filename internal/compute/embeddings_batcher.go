@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Napageneral/comms/internal/gemini"
+	"github.com/Napageneral/cortex/internal/gemini"
 )
 
 const (

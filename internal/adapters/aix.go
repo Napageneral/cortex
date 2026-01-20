@@ -49,7 +49,7 @@ func (a *AixAdapter) Name() string {
 	return a.source
 }
 
-func (a *AixAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (SyncResult, error) {
+func (a *AixAdapter) Sync(ctx context.Context, cortexDB *sql.DB, full bool) (SyncResult, error) {
 	start := time.Now()
 	var result SyncResult
 
@@ -60,33 +60,33 @@ func (a *AixAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sync
 	}
 	defer aixDB.Close()
 
-	// Enable foreign keys on comms DB
-	if _, err := commsDB.Exec("PRAGMA foreign_keys = ON"); err != nil {
+	// Enable foreign keys on cortex DB
+	if _, err := cortexDB.Exec("PRAGMA foreign_keys = ON"); err != nil {
 		return result, fmt.Errorf("failed to enable foreign keys: %w", err)
 	}
 	// Avoid transient SQLITE_BUSY errors during large writes.
-	_, _ = commsDB.Exec("PRAGMA busy_timeout = 5000")
+	_, _ = cortexDB.Exec("PRAGMA busy_timeout = 5000")
 	// Prefer WAL for ingestion performance (safe default for SQLite).
-	_, _ = commsDB.Exec("PRAGMA journal_mode = WAL")
-	_, _ = commsDB.Exec("PRAGMA synchronous = NORMAL")
+	_, _ = cortexDB.Exec("PRAGMA journal_mode = WAL")
+	_, _ = cortexDB.Exec("PRAGMA synchronous = NORMAL")
 	// Aggressive full-sync pragmas (speed > durability during import).
-	// NOTE: If the machine crashes mid-import, the comms DB could be left in a bad state.
+	// NOTE: If the machine crashes mid-import, the cortex DB could be left in a bad state.
 	// For full rebuilds, this is an acceptable tradeoff for performance.
 	if full {
-		_, _ = commsDB.Exec("PRAGMA synchronous = OFF")
-		_, _ = commsDB.Exec("PRAGMA temp_store = MEMORY")
-		_, _ = commsDB.Exec("PRAGMA cache_size = -200000")         // ~200MB
-		_, _ = commsDB.Exec("PRAGMA mmap_size = 268435456")        // 256MB
-		_, _ = commsDB.Exec("PRAGMA wal_autocheckpoint = 1000000") // reduce checkpoints
+		_, _ = cortexDB.Exec("PRAGMA synchronous = OFF")
+		_, _ = cortexDB.Exec("PRAGMA temp_store = MEMORY")
+		_, _ = cortexDB.Exec("PRAGMA cache_size = -200000")         // ~200MB
+		_, _ = cortexDB.Exec("PRAGMA mmap_size = 268435456")        // 256MB
+		_, _ = cortexDB.Exec("PRAGMA wal_autocheckpoint = 1000000") // reduce checkpoints
 	}
 	// Keep correctness while reducing per-statement overhead.
-	_, _ = commsDB.Exec("PRAGMA defer_foreign_keys = ON")
+	_, _ = cortexDB.Exec("PRAGMA defer_foreign_keys = ON")
 
 	// Get sync watermark (seconds)
 	var lastSync int64
 	var lastEventID sql.NullString
 	if !full {
-		row := commsDB.QueryRow("SELECT last_sync_at, last_event_id FROM sync_watermarks WHERE adapter = ?", a.Name())
+		row := cortexDB.QueryRow("SELECT last_sync_at, last_event_id FROM sync_watermarks WHERE adapter = ?", a.Name())
 		if err := row.Scan(&lastSync, &lastEventID); err != nil && err != sql.ErrNoRows {
 			return result, fmt.Errorf("failed to get sync watermark: %w", err)
 		}
@@ -94,11 +94,11 @@ func (a *AixAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sync
 
 	// Look up me person if present (optional).
 	var mePersonID string
-	_ = commsDB.QueryRow("SELECT id FROM persons WHERE is_me = 1 LIMIT 1").Scan(&mePersonID)
+	_ = cortexDB.QueryRow("SELECT id FROM persons WHERE is_me = 1 LIMIT 1").Scan(&mePersonID)
 
 	// Ensure "me" has an identity that indicates presence on this source (helps cross-platform views).
 	if mePersonID != "" {
-		if err := a.ensureMeIdentity(commsDB, mePersonID); err != nil {
+		if err := a.ensureMeIdentity(cortexDB, mePersonID); err != nil {
 			return result, err
 		}
 	}
@@ -111,7 +111,7 @@ func (a *AixAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sync
 		lastEvent = lastEventID.String
 	}
 
-	threadCreated, threadUpdated, threadPerf, err := a.syncSessions(aixDB, commsDB, lastSync, full)
+	threadCreated, threadUpdated, threadPerf, err := a.syncSessions(aixDB, cortexDB, lastSync, full)
 	if err != nil {
 		return result, err
 	}
@@ -133,7 +133,7 @@ func (a *AixAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sync
 		if _, ok := aiByModel[mk]; ok {
 			continue
 		}
-		pid, createdPerson, err := a.getOrCreateAIPerson(commsDB, mk)
+		pid, createdPerson, err := a.getOrCreateAIPerson(cortexDB, mk)
 		if err != nil {
 			return result, err
 		}
@@ -144,7 +144,7 @@ func (a *AixAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sync
 	}
 
 	phaseStart := time.Now()
-	eventsCreated, eventsUpdated, maxTS, maxEventID, personsCreated, perf, err := a.syncMessages(ctx, aixDB, commsDB, lastSync, lastEvent, mePersonID, aiByModel)
+	eventsCreated, eventsUpdated, maxTS, maxEventID, personsCreated, perf, err := a.syncMessages(ctx, aixDB, cortexDB, lastSync, lastEvent, mePersonID, aiByModel)
 	if err != nil {
 		return result, err
 	}
@@ -170,7 +170,7 @@ func (a *AixAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (Sync
 	} else if maxTS == lastSync && maxEventID != "" && maxEventID > lastEvent {
 		newLastEventID = maxEventID
 	}
-	_, err = commsDB.Exec(`
+	_, err = cortexDB.Exec(`
 		INSERT INTO sync_watermarks (adapter, last_sync_at, last_event_id)
 		VALUES (?, ?, ?)
 		ON CONFLICT(adapter) DO UPDATE SET
@@ -237,13 +237,13 @@ func nullIfEmpty(s string) interface{} {
 	return s
 }
 
-func (a *AixAdapter) ensureMeIdentity(commsDB *sql.DB, mePersonID string) error {
+func (a *AixAdapter) ensureMeIdentity(cortexDB *sql.DB, mePersonID string) error {
 	// This is intentionally coarse; Eve whoami is the canonical rich identity seed.
 	identityChannel := "aix"
 	identityIdentifier := fmt.Sprintf("aix:%s:user", a.source)
 	now := time.Now().Unix()
 	identityID := uuid.New().String()
-	_, err := commsDB.Exec(`
+	_, err := cortexDB.Exec(`
 		INSERT INTO identities (id, person_id, channel, identifier, created_at)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(channel, identifier) DO UPDATE SET person_id = excluded.person_id
@@ -254,13 +254,13 @@ func (a *AixAdapter) ensureMeIdentity(commsDB *sql.DB, mePersonID string) error 
 	return nil
 }
 
-func (a *AixAdapter) getOrCreateAIPerson(commsDB *sql.DB, modelKey string) (personID string, created bool, err error) {
+func (a *AixAdapter) getOrCreateAIPerson(cortexDB *sql.DB, modelKey string) (personID string, created bool, err error) {
 	// Map each (source, model) to a stable identity key.
 	identityChannel := "ai"
 	identityIdentifier := fmt.Sprintf("aix:%s:model:%s", a.source, modelKey)
 
 	// Try lookup first
-	row := commsDB.QueryRow(`SELECT person_id FROM identities WHERE channel = ? AND identifier = ?`, identityChannel, identityIdentifier)
+	row := cortexDB.QueryRow(`SELECT person_id FROM identities WHERE channel = ? AND identifier = ?`, identityChannel, identityIdentifier)
 	if err := row.Scan(&personID); err == nil {
 		return personID, false, nil
 	} else if err != sql.ErrNoRows {
@@ -274,7 +274,7 @@ func (a *AixAdapter) getOrCreateAIPerson(commsDB *sql.DB, modelKey string) (pers
 	sourceTitle := strings.ToUpper(a.source[:1]) + a.source[1:]
 	displayName := fmt.Sprintf("%s AI (%s)", sourceTitle, modelKey)
 
-	tx, err := commsDB.Begin()
+	tx, err := cortexDB.Begin()
 	if err != nil {
 		return "", false, fmt.Errorf("begin tx: %w", err)
 	}
@@ -307,7 +307,7 @@ func (a *AixAdapter) getOrCreateAIPerson(commsDB *sql.DB, modelKey string) (pers
 func (a *AixAdapter) syncMessages(
 	ctx context.Context,
 	aixDB *sql.DB,
-	commsDB *sql.DB,
+	cortexDB *sql.DB,
 	lastSyncSeconds int64,
 	lastEventID string,
 	mePersonID string,
@@ -329,9 +329,11 @@ func (a *AixAdapter) syncMessages(
 			m.role,
 			m.content,
 			CAST(COALESCE(m.timestamp, s.created_at) / 1000 AS INTEGER) as ts_sec,
-			s.model
+			s.model,
+			mm.metadata_json
 		FROM messages m
 		JOIN sessions s ON m.session_id = s.id
+		LEFT JOIN message_metadata mm ON mm.message_id = m.id
 		WHERE s.source = ?
 		  AND (
 		    CAST(COALESCE(m.timestamp, s.created_at) / 1000 AS INTEGER) > ?
@@ -350,17 +352,17 @@ func (a *AixAdapter) syncMessages(
 
 	// Bulk write in a single transaction for SQLite performance.
 	txStart := time.Now()
-	tx, err := commsDB.Begin()
+	tx, err := cortexDB.Begin()
 	if err != nil {
-		return 0, 0, 0, "", 0, perf, fmt.Errorf("begin comms tx: %w", err)
+		return 0, 0, 0, "", 0, perf, fmt.Errorf("begin cortex tx: %w", err)
 	}
 	defer tx.Rollback()
 
 	stmtInsertEvent, err := tx.Prepare(`
 		INSERT OR IGNORE INTO events (
 			id, timestamp, channel, content_types, content,
-			direction, thread_id, reply_to, source_adapter, source_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+			direction, thread_id, reply_to, source_adapter, source_id, metadata_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
 	`)
 	if err != nil {
 		return 0, 0, 0, "", 0, perf, fmt.Errorf("prepare insert event: %w", err)
@@ -372,13 +374,15 @@ func (a *AixAdapter) syncMessages(
 		SET
 			content = ?,
 			content_types = ?,
-			thread_id = ?
+			thread_id = ?,
+			metadata_json = ?
 		WHERE source_adapter = ?
 		  AND source_id = ?
 		  AND (
 		    content IS NOT ?
 		    OR content_types IS NOT ?
 		    OR thread_id IS NOT ?
+		    OR metadata_json IS NOT ?
 		  )
 	`)
 	if err != nil {
@@ -389,8 +393,8 @@ func (a *AixAdapter) syncMessages(
 	stmtInsertToolEvent, err := tx.Prepare(`
 		INSERT OR IGNORE INTO events (
 			id, timestamp, channel, content_types, content,
-			direction, thread_id, reply_to, source_adapter, source_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+			direction, thread_id, reply_to, source_adapter, source_id, metadata_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
 	`)
 	if err != nil {
 		return 0, 0, 0, "", 0, perf, fmt.Errorf("prepare insert tool event: %w", err)
@@ -427,14 +431,15 @@ func (a *AixAdapter) syncMessages(
 
 	for rows.Next() {
 		var (
-			messageID string
-			sessionID string
-			role      string
-			content   sql.NullString
-			tsSec     int64
-			model     sql.NullString
+			messageID    string
+			sessionID    string
+			role         string
+			content      sql.NullString
+			tsSec        int64
+			model        sql.NullString
+			metadataJSON sql.NullString
 		)
-		if err := rows.Scan(&messageID, &sessionID, &role, &content, &tsSec, &model); err != nil {
+		if err := rows.Scan(&messageID, &sessionID, &role, &content, &tsSec, &model, &metadataJSON); err != nil {
 			return created, updated, maxImportedTS, maxImportedEventID, personsCreated, perf, fmt.Errorf("scan aix message: %w", err)
 		}
 		if tsSec > maxImportedTS {
@@ -455,7 +460,7 @@ func (a *AixAdapter) syncMessages(
 			aiPersonID = aiByModel["unknown"]
 		}
 
-		// Map to comms event semantics
+		// Map to cortex event semantics
 		direction := "observed"
 		switch role {
 		case "user":
@@ -471,19 +476,25 @@ func (a *AixAdapter) syncMessages(
 		// Deterministic event ID to avoid UUID cost and extra lookups.
 		eventID := adapterPrefix + messageID
 
+		// Store metadata if present
+		var metadataArg interface{}
+		if metadataJSON.Valid && metadataJSON.String != "" {
+			metadataArg = metadataJSON.String
+		}
+
 		// Insert if new.
-		res, err := stmtInsertEvent.Exec(eventID, tsSec, "cursor", contentTypesText, content.String, direction, threadID, a.Name(), messageID)
+		res, err := stmtInsertEvent.Exec(eventID, tsSec, "cursor", contentTypesText, content.String, direction, threadID, a.Name(), messageID, metadataArg)
 		if err != nil {
 			return created, updated, maxImportedTS, maxImportedEventID, personsCreated, perf, fmt.Errorf("insert event: %w", err)
 		}
 		if n, _ := res.RowsAffected(); n == 1 {
 			created++
 		} else {
-			// Update only if content/thread changed (prevents massive write churn on incremental runs).
+			// Update only if content/thread/metadata changed (prevents massive write churn on incremental runs).
 			res2, err := stmtUpdateEvent.Exec(
-				content.String, contentTypesText, threadID,
+				content.String, contentTypesText, threadID, metadataArg,
 				a.Name(), messageID,
-				content.String, contentTypesText, threadID,
+				content.String, contentTypesText, threadID, metadataArg,
 			)
 			if err != nil {
 				return created, updated, maxImportedTS, maxImportedEventID, personsCreated, perf, fmt.Errorf("update event: %w", err)
@@ -565,7 +576,7 @@ func (a *AixAdapter) syncMessages(
 		eventID := toolAdapterPrefix + sourceID
 		threadID := threadPrefix + sessionID
 
-		res, err := stmtInsertToolEvent.Exec(eventID, tsSec, "cursor", contentTypesText, command, "observed", threadID, toolAdapter, sourceID)
+		res, err := stmtInsertToolEvent.Exec(eventID, tsSec, "cursor", contentTypesText, command, "observed", threadID, toolAdapter, sourceID, metaJSON)
 		if err != nil {
 			return created, updated, maxImportedTS, maxImportedEventID, personsCreated, perf, fmt.Errorf("insert tool event: %w", err)
 		}
@@ -590,7 +601,7 @@ func (a *AixAdapter) syncMessages(
 		return created, updated, maxImportedTS, maxImportedEventID, personsCreated, perf, err
 	}
 	if err := tx.Commit(); err != nil {
-		return created, updated, maxImportedTS, maxImportedEventID, personsCreated, perf, fmt.Errorf("commit comms tx: %w", err)
+		return created, updated, maxImportedTS, maxImportedEventID, personsCreated, perf, fmt.Errorf("commit cortex tx: %w", err)
 	}
 	perf["tx_commit"] = time.Since(txStart).String()
 	return created, updated, maxImportedTS, maxImportedEventID, personsCreated, perf, nil
@@ -605,7 +616,7 @@ func insertParticipant(db *sql.DB, eventID, personID, role string) error {
 	return err
 }
 
-func (a *AixAdapter) syncSessions(aixDB, commsDB *sql.DB, lastSyncSeconds int64, full bool) (threadsCreated int, threadsUpdated int, perf map[string]string, err error) {
+func (a *AixAdapter) syncSessions(aixDB, cortexDB *sql.DB, lastSyncSeconds int64, full bool) (threadsCreated int, threadsUpdated int, perf map[string]string, err error) {
 	perf = map[string]string{}
 
 	query := `
@@ -641,9 +652,9 @@ func (a *AixAdapter) syncSessions(aixDB, commsDB *sql.DB, lastSyncSeconds int64,
 	perf["query"] = time.Since(qStart).String()
 
 	txStart := time.Now()
-	tx, err := commsDB.Begin()
+	tx, err := cortexDB.Begin()
 	if err != nil {
-		return 0, 0, perf, fmt.Errorf("begin comms tx: %w", err)
+		return 0, 0, perf, fmt.Errorf("begin cortex tx: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -713,7 +724,7 @@ func (a *AixAdapter) syncSessions(aixDB, commsDB *sql.DB, lastSyncSeconds int64,
 		return threadsCreated, threadsUpdated, perf, err
 	}
 	if err := tx.Commit(); err != nil {
-		return threadsCreated, threadsUpdated, perf, fmt.Errorf("commit comms tx: %w", err)
+		return threadsCreated, threadsUpdated, perf, fmt.Errorf("commit cortex tx: %w", err)
 	}
 	perf["tx_commit"] = time.Since(txStart).String()
 	return threadsCreated, threadsUpdated, perf, nil

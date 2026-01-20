@@ -1,8 +1,8 @@
 version: 2
 
 builds:
-  - main: ./cmd/comms
-    binary: comms
+  - main: ./cmd/cortex
+    binary: cortex
     goos:
       - darwin
       - linux
@@ -19,8 +19,8 @@ brews:
   - repository:
       owner: Napageneral
       name: homebrew-tap
-    homepage: https://github.com/Napageneral/comms
-    description: Unified communications cartographer
+    homepage: https://github.com/Napageneral/cortex
+    description: Cortex intelligence layer
 
 archives:
   - format: tar.gz

@@ -11,8 +11,8 @@ It's the data layer for a personal CRM. Users query their unified communications
 ## Architecture
 
 ```
-comms CLI
-    ├── cmd/comms/main.go     # Cobra CLI entry point
+cortex CLI
+    ├── cmd/cortex/main.go     # Cobra CLI entry point
     └── internal/
         ├── config/           # YAML config handling
         ├── db/               # SQLite database + schema
@@ -31,15 +31,15 @@ comms CLI
 
 ## File Locations
 
-- Config: `~/.config/comms/config.yaml`
-- Database: `~/Library/Application Support/Comms/comms.db`
+- Config: `~/.config/cortex/config.yaml`
+- Database: `~/Library/Application Support/Comms/cortex.db`
 - Eve DB (read-only): `~/Library/Application Support/Eve/eve.db`
 
 ## Common Operations
 
 ### Adding a new command
 
-1. Add cobra command in `cmd/comms/main.go`
+1. Add cobra command in `cmd/cortex/main.go`
 2. Implement logic in appropriate `internal/` package
 3. Support `--json` flag for machine output (use Result structs with OK bool)
 4. Use transaction pattern for multi-step database operations
@@ -78,7 +78,7 @@ if jsonOutput {
        Sync(ctx context.Context, db *sql.DB, full bool) (SyncResult, error)
    }
    ```
-3. Add `comms connect <name>` command in main.go
+3. Add `cortex connect <name>` command in main.go
 4. Store config in config.yaml via `config.Load()` and `cfg.Save()`
 5. Add status check in `checkAdapterStatus()` function
 6. Add adapter instantiation in `internal/sync/sync.go` syncAdapter() function
@@ -87,49 +87,49 @@ if jsonOutput {
 
 ```bash
 # Sync all enabled adapters
-comms sync
+cortex sync
 
 # Sync specific adapter
-comms sync --adapter imessage
+cortex sync --adapter imessage
 
 # Force full re-sync (ignore watermarks)
-comms sync --full
+cortex sync --full
 
 # JSON output
-comms sync --json
+cortex sync --json
 ```
 
 ### Adding tags
 
 ```bash
 # List all tags
-comms tag list
+cortex tag list
 
 # Filter tags by type
-comms tag list --type project
+cortex tag list --type project
 
 # Tag a specific event
-comms tag add --event <event-id> --tag project:htaa
+cortex tag add --event <event-id> --tag project:htaa
 
 # Bulk tag events by person
-comms tag add --person "Dane" --tag context:business
+cortex tag add --person "Dane" --tag context:business
 
 # Bulk tag with multiple filters
-comms tag add --channel imessage --since 2026-01-01 --tag topic:planning
+cortex tag add --channel imessage --since 2026-01-01 --tag topic:planning
 ```
 
 ### Raw SQL queries
 
 ```bash
 # Read-only queries (default)
-comms db query "SELECT COUNT(*) FROM events"
-comms db query "SELECT * FROM persons LIMIT 10"
+cortex db query "SELECT COUNT(*) FROM events"
+cortex db query "SELECT * FROM persons LIMIT 10"
 
 # Mutation queries (requires --write flag)
-comms db query --write "UPDATE persons SET display_name = 'Dad' WHERE canonical_name = 'Father'"
+cortex db query --write "UPDATE persons SET display_name = 'Dad' WHERE canonical_name = 'Father'"
 
 # JSON output for programmatic access
-comms db query --json "SELECT channel, COUNT(*) as count FROM events GROUP BY channel"
+cortex db query --json "SELECT channel, COUNT(*) as count FROM events GROUP BY channel"
 ```
 
 ### Running tests
@@ -142,7 +142,7 @@ go test ./...
 
 ```bash
 make build
-./comms version
+./cortex version
 ```
 
 ## Common Operations
@@ -151,19 +151,19 @@ make build
 
 ```bash
 # Seed default conversation definitions (creates imessage_3hr and gmail_thread)
-comms chunk seed
+cortex chunk seed
 
 # List conversation definitions
-comms chunk list
+cortex chunk list
 
 # Run chunking for a definition
-comms chunk run imessage_3hr       # Time-gap chunking for iMessage (3-hour gaps)
-comms chunk run gmail_thread       # Thread-based chunking for Gmail
-comms chunk run --definition gmail_thread
+cortex chunk run imessage_3hr       # Time-gap chunking for iMessage (3-hour gaps)
+cortex chunk run gmail_thread       # Thread-based chunking for Gmail
+cortex chunk run --definition gmail_thread
 
 # JSON output
-comms chunk list --json
-comms chunk run imessage_3hr --json
+cortex chunk list --json
+cortex chunk run imessage_3hr --json
 ```
 
 ## Gotchas
@@ -302,7 +302,7 @@ comms chunk run imessage_3hr --json
 - FindFactCollisions implements O(F) collision detection via GROUP BY fact_value HAVING COUNT > 1
 - Facts have three boolean flags: is_sensitive, is_identifier, is_hard_identifier
 - isIdentifierType returns true for both hard identifiers and soft identifiers (those with weights)
-- Analysis types registered via `comms compute seed` command (matches convo-all-v1 pattern)
+- Analysis types registered via `cortex compute seed` command (matches convo-all-v1 pattern)
 - Compute seed uses ON CONFLICT(name) DO NOTHING for idempotent registration
 - pii_extraction_v1 registered as structured analysis type with 19 facet extraction mappings
 - facets_config_json uses simpler "mappings" structure: [{"json_path": "...", "facet_type": "..."}]
@@ -323,7 +323,7 @@ comms chunk run imessage_3hr --json
 - Evidence strings combined with semicolons when multiple evidence pieces exist
 - isSensitiveFactType flags SSN, passport, drivers_license as is_sensitive=1
 - SyncStats tracks: facets processed, facts created/updated, unattributed created, third parties created
-- Extraction CLI: comms extract pii enqueues PII extraction jobs via compute engine
+- Extraction CLI: cortex extract pii enqueues PII extraction jobs via compute engine
 - Extraction filters: --channel, --since (30d/7d/2024-01-01), --conversation, --person, --dry-run, --limit
 - Extraction query excludes already-analyzed conversations via NOT EXISTS on analysis_runs
 - Duration parsing: --since supports days (30d), hours (7h), or YYYY-MM-DD date format
@@ -342,11 +342,11 @@ comms chunk run imessage_3hr --json
 - pairKey pattern (p1 < p2) ensures consistent person pair representation across algorithm phases
 - Bidirectional deduplication: check (p1,p2) OR (p2,p1) before creating merge_events
 - RunFullResolution orchestrates GenerateMergeSuggestions + optional ExecuteAutoMerges if --auto flag set
-- Resolution CLI: `comms identify resolve` with --auto (execute), --dry-run (preview), outputs phase counts
+- Resolution CLI: `cortex identify resolve` with --auto (execute), --dry-run (preview), outputs phase counts
 - Merge management: accept <id>, reject <id>, accept-all (auto-eligible only), merges (list with --status, --auto-eligible, --limit)
 - Person commands: facts <person> (--category, --include-evidence), profile <person> (formatted view)
 - Unattributed commands: list (--unresolved), attribute <fact_id> <person> (manual resolution)
-- Status command: `comms identify status` shows active/merged persons, facts, pending merges, cross-channel linked count
+- Status command: `cortex identify status` shows active/merged persons, facts, pending merges, cross-channel linked count
 - All identity commands support --json flag for programmatic access
 - Auto-merge flow: detection → suggestion → automatic execution for confidence >= 0.8
 - Manual review flow: detection → suggestion → human approval → execution

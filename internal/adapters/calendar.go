@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Napageneral/comms/internal/bus"
-	"github.com/Napageneral/comms/internal/state"
+	"github.com/Napageneral/cortex/internal/bus"
+	"github.com/Napageneral/cortex/internal/state"
 	"github.com/google/uuid"
 )
 
@@ -245,7 +245,7 @@ func (c *CalendarAdapter) upsertEvent(db *sql.DB, eventID string, ts int64, cont
 		return false, false, err
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
-		_ = bus.Emit(db, "comms.event.created", c.Name(), eventID, map[string]any{
+		_ = bus.Emit(db, "cortex.event.created", c.Name(), eventID, map[string]any{
 			"channel":        "calendar",
 			"direction":      direction,
 			"timestamp":      ts,
@@ -268,7 +268,7 @@ func (c *CalendarAdapter) upsertEvent(db *sql.DB, eventID string, ts int64, cont
 		return false, false, err
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
-		_ = bus.Emit(db, "comms.event.updated", c.Name(), eventID, map[string]any{
+		_ = bus.Emit(db, "cortex.event.updated", c.Name(), eventID, map[string]any{
 			"channel":        "calendar",
 			"direction":      direction,
 			"timestamp":      ts,
@@ -319,14 +319,14 @@ func (c *CalendarAdapter) setCursor(db *sql.DB, v string) {
 	_ = state.Set(db, c.Name(), "calendar_backfill_cursor", v)
 }
 
-func (c *CalendarAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (SyncResult, error) {
+func (c *CalendarAdapter) Sync(ctx context.Context, cortexDB *sql.DB, full bool) (SyncResult, error) {
 	start := time.Now()
 	res := SyncResult{Perf: map[string]string{}}
 
-	if _, err := commsDB.Exec("PRAGMA foreign_keys = ON"); err != nil {
+	if _, err := cortexDB.Exec("PRAGMA foreign_keys = ON"); err != nil {
 		return res, err
 	}
-	if err := c.ensureCalendarTables(commsDB); err != nil {
+	if err := c.ensureCalendarTables(cortexDB); err != nil {
 		return res, err
 	}
 
@@ -342,7 +342,7 @@ func (c *CalendarAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) 
 	// Backfill strategy:
 	// - Full sync: month windows from 2004 -> now+1y, cursor stored in adapter_state.
 	// - Incremental: last 30d -> now+1y.
-	cursor, hasCursor := c.getCursor(commsDB)
+	cursor, hasCursor := c.getCursor(cortexDB)
 	firstRun := !hasCursor
 
 	if full || firstRun || hasCursor {
@@ -384,7 +384,7 @@ func (c *CalendarAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) 
 					content := fmt.Sprintf("Summary: %s\nCalendar: %s\nStatus: %s\nLink: %s\nLocation: %s\n\n%s",
 						ev.Summary, cal.Summary, ev.Status, ev.HTMLLink, ev.Location, ev.Description)
 
-					created, updated, err := c.upsertEvent(commsDB, eventID, ts, content, threadID, sourceID)
+					created, updated, err := c.upsertEvent(cortexDB, eventID, ts, content, threadID, sourceID)
 					if err != nil {
 						return res, err
 					}
@@ -396,39 +396,39 @@ func (c *CalendarAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) 
 
 					// Participants: organizer + attendees
 					if ev.Organizer != nil && ev.Organizer.Email != "" {
-						pid, created, err := c.getOrCreatePersonByEmail(commsDB, ev.Organizer.Email, cache)
+						pid, created, err := c.getOrCreatePersonByEmail(cortexDB, ev.Organizer.Email, cache)
 						if err == nil {
 							if created {
 								res.PersonsCreated++
 							}
-							_, _ = commsDB.Exec(`INSERT OR IGNORE INTO event_participants (event_id, person_id, role) VALUES (?, ?, 'organizer')`, eventID, pid)
+							_, _ = cortexDB.Exec(`INSERT OR IGNORE INTO event_participants (event_id, person_id, role) VALUES (?, ?, 'organizer')`, eventID, pid)
 						}
 					}
 					for _, a := range ev.Attendees {
 						if a.Email == "" {
 							continue
 						}
-						pid, created, err := c.getOrCreatePersonByEmail(commsDB, a.Email, cache)
+						pid, created, err := c.getOrCreatePersonByEmail(cortexDB, a.Email, cache)
 						if err == nil {
 							if created {
 								res.PersonsCreated++
 							}
-							_, _ = commsDB.Exec(`INSERT OR IGNORE INTO event_participants (event_id, person_id, role) VALUES (?, ?, 'attendee')`, eventID, pid)
+							_, _ = cortexDB.Exec(`INSERT OR IGNORE INTO event_participants (event_id, person_id, role) VALUES (?, ?, 'attendee')`, eventID, pid)
 						}
 					}
 
-					_ = c.upsertStateAndTags(commsDB, eventID, cal.ID, ev)
+					_ = c.upsertStateAndTags(cortexDB, eventID, cal.ID, ev)
 				}
 			}
 
 			// Persist cursor
-			c.setCursor(commsDB, monthEnd.Format("2006-01-02"))
+			c.setCursor(cortexDB, monthEnd.Format("2006-01-02"))
 			monthStart = monthEnd
 		}
 
 		res.Perf["calendar_backfill_windows"] = fmt.Sprintf("%d", windows)
 		// Mark backfill complete (empty cursor disables future full loops).
-		c.setCursor(commsDB, "")
+		c.setCursor(cortexDB, "")
 	} else {
 		// Incremental poll: past 30d to 1y ahead.
 		from := time.Now().UTC().AddDate(0, 0, -30)
@@ -451,7 +451,7 @@ func (c *CalendarAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) 
 				content := fmt.Sprintf("Summary: %s\nCalendar: %s\nStatus: %s\nLink: %s\nLocation: %s\n\n%s",
 					ev.Summary, cal.Summary, ev.Status, ev.HTMLLink, ev.Location, ev.Description)
 
-				created, updated, err := c.upsertEvent(commsDB, eventID, ts, content, threadID, sourceID)
+				created, updated, err := c.upsertEvent(cortexDB, eventID, ts, content, threadID, sourceID)
 				if err != nil {
 					return res, err
 				}
@@ -461,27 +461,27 @@ func (c *CalendarAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) 
 					res.EventsUpdated++
 				}
 				if ev.Organizer != nil && ev.Organizer.Email != "" {
-					pid, created, err := c.getOrCreatePersonByEmail(commsDB, ev.Organizer.Email, cache)
+					pid, created, err := c.getOrCreatePersonByEmail(cortexDB, ev.Organizer.Email, cache)
 					if err == nil {
 						if created {
 							res.PersonsCreated++
 						}
-						_, _ = commsDB.Exec(`INSERT OR IGNORE INTO event_participants (event_id, person_id, role) VALUES (?, ?, 'organizer')`, eventID, pid)
+						_, _ = cortexDB.Exec(`INSERT OR IGNORE INTO event_participants (event_id, person_id, role) VALUES (?, ?, 'organizer')`, eventID, pid)
 					}
 				}
 				for _, a := range ev.Attendees {
 					if a.Email == "" {
 						continue
 					}
-					pid, created, err := c.getOrCreatePersonByEmail(commsDB, a.Email, cache)
+					pid, created, err := c.getOrCreatePersonByEmail(cortexDB, a.Email, cache)
 					if err == nil {
 						if created {
 							res.PersonsCreated++
 						}
-						_, _ = commsDB.Exec(`INSERT OR IGNORE INTO event_participants (event_id, person_id, role) VALUES (?, ?, 'attendee')`, eventID, pid)
+						_, _ = cortexDB.Exec(`INSERT OR IGNORE INTO event_participants (event_id, person_id, role) VALUES (?, ?, 'attendee')`, eventID, pid)
 					}
 				}
-				_ = c.upsertStateAndTags(commsDB, eventID, cal.ID, ev)
+				_ = c.upsertStateAndTags(cortexDB, eventID, cal.ID, ev)
 			}
 		}
 	}

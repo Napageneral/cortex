@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Napageneral/comms/internal/db"
-	"github.com/Napageneral/comms/internal/me"
+	"github.com/Napageneral/cortex/internal/db"
+	"github.com/Napageneral/cortex/internal/me"
 )
 
 func eveDBPath(t *testing.T) string {
@@ -53,7 +53,7 @@ func setupTempCommsDB(t *testing.T) *sql.DB {
 		t.Fatalf("mkdir config dir: %v", err)
 	}
 
-	// Force comms to use temp locations (macOS otherwise uses ~/Library/...).
+	// Force cortex to use temp locations (macOS otherwise uses ~/Library/...).
 	t.Setenv("COMMS_DATA_DIR", dataDir)
 	t.Setenv("COMMS_CONFIG_DIR", configDir)
 
@@ -61,18 +61,18 @@ func setupTempCommsDB(t *testing.T) *sql.DB {
 		t.Fatalf("db.Init: %v", err)
 	}
 
-	commsDB, err := db.Open()
+	cortexDB, err := db.Open()
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
-	t.Cleanup(func() { _ = commsDB.Close() })
+	t.Cleanup(func() { _ = cortexDB.Close() })
 
 	// Ensure "me" exists so sent messages can attach a sender participant.
-	if err := me.SetMeName(commsDB, "Test User"); err != nil {
+	if err := me.SetMeName(cortexDB, "Test User"); err != nil {
 		t.Fatalf("me.SetMeName: %v", err)
 	}
 
-	return commsDB
+	return cortexDB
 }
 
 func TestEveAdapter_MapsCoreFields(t *testing.T) {
@@ -154,14 +154,14 @@ func TestEveAdapter_MapsCoreFields(t *testing.T) {
 		}
 	}
 
-	commsDB := setupTempCommsDB(t)
+	cortexDB := setupTempCommsDB(t)
 
 	// Seed watermark so sync only imports a small tail window.
 	watermark := minTS - 5
 	if watermark < 0 {
 		watermark = 0
 	}
-	_, err := commsDB.Exec(`
+	_, err := cortexDB.Exec(`
 		INSERT INTO sync_watermarks (adapter, last_sync_at, last_event_id)
 		VALUES (?, ?, NULL)
 		ON CONFLICT(adapter) DO UPDATE SET last_sync_at = excluded.last_sync_at
@@ -175,7 +175,7 @@ func TestEveAdapter_MapsCoreFields(t *testing.T) {
 		t.Fatalf("NewEveAdapter: %v", err)
 	}
 
-	sr, err := adapter.Sync(ctx, commsDB, false)
+	sr, err := adapter.Sync(ctx, cortexDB, false)
 	if err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestEveAdapter_MapsCoreFields(t *testing.T) {
 			threadID     sql.NullString
 			contentTypes string
 		)
-		row := commsDB.QueryRow(`
+		row := cortexDB.QueryRow(`
 			SELECT thread_id, content_types
 			FROM events
 			WHERE source_adapter = 'imessage' AND source_id = ?
@@ -220,7 +220,7 @@ func TestEveAdapter_MapsCoreFields(t *testing.T) {
 func TestEveAdapter_CountMatchesEveTailWindow(t *testing.T) {
 	ctx := context.Background()
 	eve := openEveDB(t)
-	commsDB := setupTempCommsDB(t)
+	cortexDB := setupTempCommsDB(t)
 
 	// Get Eve max timestamp and sync only the last 120 seconds.
 	var maxTSStr string
@@ -241,7 +241,7 @@ func TestEveAdapter_CountMatchesEveTailWindow(t *testing.T) {
 		t.Fatalf("expected count query: %v", err)
 	}
 
-	_, err = commsDB.Exec(`
+	_, err = cortexDB.Exec(`
 		INSERT INTO sync_watermarks (adapter, last_sync_at, last_event_id)
 		VALUES (?, ?, NULL)
 		ON CONFLICT(adapter) DO UPDATE SET last_sync_at = excluded.last_sync_at
@@ -255,12 +255,12 @@ func TestEveAdapter_CountMatchesEveTailWindow(t *testing.T) {
 		t.Fatalf("NewEveAdapter: %v", err)
 	}
 
-	sr, err := adapter.Sync(ctx, commsDB, false)
+	sr, err := adapter.Sync(ctx, cortexDB, false)
 	if err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 
-	// On a fresh comms DB, everything imported should be new.
+	// On a fresh cortex DB, everything imported should be new.
 	if sr.EventsCreated != expected {
 		t.Fatalf("expected EventsCreated=%d, got %d (EventsUpdated=%d)", expected, sr.EventsCreated, sr.EventsUpdated)
 	}

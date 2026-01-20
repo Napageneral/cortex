@@ -10,14 +10,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Napageneral/comms/internal/identify"
+	"github.com/Napageneral/cortex/internal/identify"
 	"github.com/google/uuid"
 )
 
 // ContactsAdapter syncs Google Contacts via gogcli.
 //
 // Primary purpose: build the identity graph (email <-> phone <-> names) so
-// comms can unify iMessage and Gmail participants.
+// cortex can unify iMessage and Gmail participants.
 type ContactsAdapter struct {
 	name    string
 	account string
@@ -273,7 +273,7 @@ type contactWithDetails struct {
 	Phones   []string
 }
 
-func (c *ContactsAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) (SyncResult, error) {
+func (c *ContactsAdapter) Sync(ctx context.Context, cortexDB *sql.DB, full bool) (SyncResult, error) {
 	start := time.Now()
 	res := SyncResult{Perf: map[string]string{}}
 	_ = full // contacts sync is effectively always "full" (idempotent)
@@ -337,7 +337,7 @@ func (c *ContactsAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) 
 			if cand.ident == "" {
 				continue
 			}
-			pid, isMe, ok, err := c.getPersonByIdentity(commsDB, cand.ch, cand.ident)
+			pid, isMe, ok, err := c.getPersonByIdentity(cortexDB, cand.ch, cand.ident)
 			if err != nil {
 				return res, err
 			}
@@ -368,7 +368,7 @@ func (c *ContactsAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) 
 					continue
 				}
 			}
-			pid, err := c.createPerson(commsDB, canonical)
+			pid, err := c.createPerson(cortexDB, canonical)
 			if err != nil {
 				return res, err
 			}
@@ -378,7 +378,7 @@ func (c *ContactsAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) 
 
 		// Best-effort: set display_name to contact name if we have one and display_name is empty.
 		if name != "" {
-			_, _ = commsDB.Exec(`UPDATE persons SET display_name = ?, updated_at = ? WHERE id = ? AND (display_name IS NULL OR display_name = '')`, name, time.Now().Unix(), basePerson)
+			_, _ = cortexDB.Exec(`UPDATE persons SET display_name = ?, updated_at = ? WHERE id = ? AND (display_name IS NULL OR display_name = '')`, name, time.Now().Unix(), basePerson)
 		}
 
 		// Add identities to base person. If identity already belongs to someone else, merge.
@@ -387,7 +387,7 @@ func (c *ContactsAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) 
 				continue
 			}
 
-			pid, isMe, ok, err := c.getPersonByIdentity(commsDB, cand.ch, cand.ident)
+			pid, isMe, ok, err := c.getPersonByIdentity(cortexDB, cand.ch, cand.ident)
 			if err != nil {
 				return res, err
 			}
@@ -396,18 +396,18 @@ func (c *ContactsAdapter) Sync(ctx context.Context, commsDB *sql.DB, full bool) 
 				// Merge into base. If other is me, swap (never merge me into others).
 				if isMe && !baseIsMe {
 					// Base becomes me; merge old base into me.
-					if err := identify.Merge(commsDB, pid, basePerson); err == nil {
+					if err := identify.Merge(cortexDB, pid, basePerson); err == nil {
 						merged++
 						basePerson = pid
 						baseIsMe = true
 					}
 				} else {
-					if err := identify.Merge(commsDB, basePerson, pid); err == nil {
+					if err := identify.Merge(cortexDB, basePerson, pid); err == nil {
 						merged++
 					}
 				}
 			} else if !ok {
-				if err := c.addIdentity(commsDB, basePerson, cand.ch, cand.ident); err != nil {
+				if err := c.addIdentity(cortexDB, basePerson, cand.ch, cand.ident); err != nil {
 					return res, err
 				}
 			}
