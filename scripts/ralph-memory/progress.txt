@@ -468,3 +468,47 @@
 - Compound match queries must JOIN relationships table for BORN_ON/WORKS_AT
 - Entity-specific detection uses same patterns but with WHERE ea1.entity_id = ?
 
+### Auto-Merge Pattern
+- Conflict detection before merge: check different phones/emails/birthdates
+- Conflicts detected by checking if both entities have values of same type with no overlap
+- Auto-merge rules: hard_identifier ≥0.95 + no conflicts, or 2+ hard identifiers, or name+birthdate ≥0.90
+- Merge execution: move aliases → move relationships → move mentions → update canonical name → mark merged_into → create audit event
+- Use transactions for merge execution to ensure atomicity
+- INSERT OR REPLACE for mentions when both entities mentioned in same episode (merge counts)
+- isBetterName heuristics: title case > ALL CAPS, longer names > shorter (but not excessively long)
+
+---
+## 2026-01-21 - [MS-018] Implement auto-merge rules and execution
+- Created AutoMerger struct with DetectConflicts, ShouldAutoMerge, ExecuteMerge methods
+- Conflict detection: different phones, different emails, different birthdates
+- Both entities must have values of the same type for a conflict (one missing = no conflict)
+- Overlapping values = no conflict (same phone on both = good)
+- Auto-merge rules:
+  - Hard identifier with ≥0.95 confidence + no conflicts → auto-merge
+  - Multiple hard identifiers (2+) → auto-merge (already 0.99 confidence)
+  - Name + birthdate compound match ≥0.90 → auto-merge
+  - Anything else with conflicts → leave for human review
+- Merge execution in transaction:
+  1. Move aliases from source to target
+  2. Update relationships (both source_entity_id and target_entity_id)
+  3. Merge episode mentions (INSERT OR REPLACE to sum counts)
+  4. Maybe update canonical name if source has better name
+  5. Mark source entity as merged_into target
+  6. Create entity_merge_events audit record
+  7. Update merge_candidates status to 'merged'
+- ProcessMergeCandidates batch method for processing all pending candidates
+- Additional helpers: RejectCandidate, DeferCandidate, GetCandidateByID, GetMergeHistory
+
+**Files changed:**
+- `internal/memory/auto_merger.go` - AutoMerger implementation with full conflict/merge logic
+- `internal/memory/auto_merger_test.go` - 24 unit tests covering all scenarios
+
+**Learnings:**
+- Conflict detection is crucial - false merges are worse than duplicates
+- Both entities must have values of same type for a conflict (asymmetric = no conflict)
+- Merge execution needs transaction for atomicity
+- INSERT OR REPLACE handles the case where both entities are mentioned in the same episode
+- isBetterName needs heuristics: ALL CAPS is usually worse, moderate length is better
+- MergeCandidate struct needs to include conflicts field for storing detected conflicts
+- Use pointers for optional string fields in structs (ResolvedAt, ResolvedBy, etc.)
+

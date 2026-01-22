@@ -383,6 +383,15 @@ cortex chunk run imessage_3hr --json
 - Invalidated relationships (invalid_at IS NOT NULL) excluded from compound matching
 - CollisionDetector.DetectCollisionsForEntity() for incremental detection after entity resolution
 - merge_candidates created with reason, confidence, matching_facts JSON, context JSON
+- Auto-merge: AutoMerger evaluates merge_candidates, detects conflicts, auto-merges when safe
+- Conflict detection: different phones/emails between entities = conflict, different birthdates = conflict
+- Conflict check: both entities must have values of same type for conflict (one missing = no conflict)
+- Auto-merge rules: hard_identifier ≥0.95 + no conflicts, 2+ hard identifiers, name+birthdate ≥0.90
+- Merge execution: aliases moved → relationships updated → mentions merged → canonical name maybe updated → merged_into set
+- Merge atomicity: ExecuteMerge uses transactions to ensure all-or-nothing
+- Mention merging: INSERT OR REPLACE sums mention_counts when both entities mentioned in same episode
+- merge_candidates status: pending → merged/rejected/deferred with resolved_at, resolved_by, resolution_reason
+- entity_merge_events: audit trail of executed merges with triggering_facts, similarity_score
 
 ## Schema Quick Reference
 
