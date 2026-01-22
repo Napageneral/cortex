@@ -155,3 +155,71 @@
 - asserted_by_entity_id enables tracking WHO said something (speaker attribution) vs the episode itself
 - source_type ('self_disclosed', 'mentioned', 'inferred') is critical for confidence scoring - self_disclosed facts are higher confidence
 
+---
+## 2026-01-21 - [MS-007] Add merge_candidates and merge_events tables to schema
+- Added `entity_merge_candidates` table for tracking suspected entity duplicates awaiting human review
+- Added `entity_merge_events` table for audit trail of executed entity merges
+- Used `entity_` prefix to distinguish from existing person-based `merge_suggestions` and `merge_events` tables
+- Columns per spec §3.4: id, entity_a_id/entity_b_id (candidates) or source_entity_id/target_entity_id (events), confidence, reason/merge_type, context/triggering_facts, status, timestamps, resolved_by
+- Added indexes: idx_entity_merge_candidates_status, idx_entity_merge_events_target
+- Schema version incremented from 18 to 19
+
+**Files changed:**
+- `internal/db/schema.sql` - Added entity_merge_candidates and entity_merge_events tables with indexes
+
+**Learnings:**
+- The codebase already has person-based merge tables (merge_suggestions, merge_events) from the older identity system
+- New entity-based merge tables need distinct names (entity_ prefix) to coexist during transition
+- merge_candidates is for suspected duplicates needing human review; merge_events is for executed merges (audit log)
+- Both tables reference entities(id) rather than persons(id) for the new entity-based memory system
+- The reason field (candidates) vs merge_type field (events) distinguish how the merge was detected vs what kind it was
+
+---
+## 2026-01-21 - [MS-008] Extend embeddings table for unified storage
+- Renamed embeddings table columns: `entity_type` → `target_type`, `entity_id` → `target_id`
+- Updated target_type comment to document new values: 'event', 'episode', 'entity', 'relationship'
+- Renamed UNIQUE constraint to use (target_type, target_id, model)
+- Renamed index from idx_embeddings_entity to idx_embeddings_target on (target_type, target_id)
+- Updated all Go code references in engine.go, search.go, search_test.go
+- Schema version incremented from 19 to 20
+- The EmbeddingJobPayload struct keeps EntityType/EntityID as JSON keys for backward compatibility with queued jobs
+
+**Files changed:**
+- `internal/db/schema.sql` - Renamed columns, UNIQUE constraint, and index
+- `internal/compute/engine.go` - Updated SQL queries (EnqueueEmbeddings, EnqueueFacetEmbeddings, EnqueuePersonEmbeddings, EnqueueDocumentEmbeddings, handleEmbeddingJob)
+- `internal/search/search.go` - Updated SQL queries (SearchEpisodes, loadDocumentEmbeddings, searchEventsVector)
+- `internal/search/search_test.go` - Updated INSERT statement column names
+
+**Learnings:**
+- The spec uses `target_type` and `target_id` terminology for consistency with "target_entity_id" and "target_literal" in other tables
+- Existing Go struct field names (EntityType, EntityID) and JSON keys can be kept for backward compatibility with job payloads - only the SQL column names need to change
+- The embeddings table supports multiple embeddable types: events, episodes, facets, persons, documents, and now will also support entities and relationships
+- ON CONFLICT clause in INSERT statements must reference the new column names (target_type, target_id) to match the UNIQUE constraint
+
+### Entity Types
+- Entity types are code-defined in `internal/memory/entity_types.go`, not stored in database
+- 8 default types: Entity(0), Person(1), Company(2), Project(3), Location(4), Event(5), Document(6), Pet(7)
+- Use constants (EntityTypePerson, etc.) for type safety in code
+- GetEntityTypeByName is case-insensitive for flexibility
+
+---
+## 2026-01-21 - [MS-009] Define entity types in code
+- Created new `internal/memory` package for memory system components
+- Defined EntityType struct with ID, Name, Description fields
+- Created DefaultEntityTypes slice with 8 types matching spec §3.2
+- Added convenience constants: EntityTypeEntity, EntityTypePerson, etc.
+- Implemented GetEntityTypeByID and GetEntityTypeByName helper functions
+- Added IsValidEntityTypeID and EntityTypeNames utility functions
+- GetEntityTypeByName uses case-insensitive matching for flexibility
+
+**Files changed:**
+- `internal/memory/entity_types.go` - Entity type definitions and helpers
+- `internal/memory/entity_types_test.go` - Comprehensive unit tests
+
+**Learnings:**
+- Created new `internal/memory` package as the home for memory system code
+- Entity types are code-defined (not in DB) to enable type-specific resolution strategies
+- Helper functions return pointers to enable nil checks for invalid IDs/names
+- Constants provide type safety and make code more readable than magic numbers
+- Returning pointer to slice element (not copy) keeps memory efficient for lookups
+

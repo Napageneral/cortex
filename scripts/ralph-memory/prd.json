@@ -105,8 +105,8 @@
         "go build succeeds"
       ],
       "priority": 7,
-      "passes": false,
-      "notes": "See MEMORY_SYSTEM_SPEC.md §3.4 and Part 8. Audit trail for merges."
+      "passes": true,
+      "notes": "See MEMORY_SYSTEM_SPEC.md §3.4 and Part 8. Audit trail for merges. Completed: Added entity_merge_candidates and entity_merge_events tables with entity_ prefix to distinguish from existing person-based tables."
     },
     {
       "id": "MS-008",
@@ -120,8 +120,8 @@
         "go build succeeds"
       ],
       "priority": 8,
-      "passes": false,
-      "notes": "See MEMORY_SYSTEM_SPEC.md §3.4. Unified embedding storage."
+      "passes": true,
+      "notes": "See MEMORY_SYSTEM_SPEC.md §3.4. Unified embedding storage. Completed: Renamed entity_type/entity_id to target_type/target_id, updated all Go code references, schema version 20."
     },
     {
       "id": "MS-009",
@@ -134,8 +134,8 @@
         "Unit tests pass"
       ],
       "priority": 9,
-      "passes": false,
-      "notes": "See MEMORY_SYSTEM_SPEC.md §3.2. Entity types are code-defined, not in DB."
+      "passes": true,
+      "notes": "See MEMORY_SYSTEM_SPEC.md §3.2. Entity types are code-defined, not in DB. Completed: Created internal/memory package with entity_types.go and entity_types_test.go."
     },
     {
       "id": "MS-010",

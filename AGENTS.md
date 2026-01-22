@@ -18,7 +18,8 @@ cortex CLI
         ├── db/               # SQLite database + schema
         ├── adapters/         # Channel adapters (eve, gmail, etc.)
         ├── sync/             # Sync orchestration
-        └── query/            # Query building
+        ├── query/            # Query building
+        └── memory/           # Memory system (entity types, extraction, resolution)
 ```
 
 ## Key Design Decisions
@@ -371,6 +372,15 @@ analysis_types  -- Analysis definitions (prompt, output schema, facet extraction
 analysis_runs   -- Execution tracking per (analysis_type, episode) pair
 facets          -- Extracted queryable values from structured analyses
 embeddings      -- Vector embeddings for entities (events, episodes, facets, persons, threads)
+
+-- Memory system (entity extraction and resolution)
+entities        -- Canonical deduplicated entities (Person, Company, Project, etc.)
+entity_aliases  -- Identity markers (email, phone, handles) for resolution
+relationships   -- Triples with temporal bounds (source → relation → target)
+episode_entity_mentions    -- Junction: which entities appear in which episodes
+episode_relationship_mentions -- Provenance: which relationships extracted from which episodes
+entity_merge_candidates    -- Suspected duplicates for human review
+entity_merge_events       -- Audit trail of executed merges
 ```
 
 See `internal/db/schema.sql` for full DDL.
