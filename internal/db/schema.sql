@@ -579,9 +579,53 @@ CREATE INDEX IF NOT EXISTS idx_entity_aliases_lookup ON entity_aliases(alias, al
 CREATE INDEX IF NOT EXISTS idx_entity_aliases_normalized ON entity_aliases(normalized, alias_type);
 CREATE INDEX IF NOT EXISTS idx_entity_aliases_entity ON entity_aliases(entity_id);
 
+-- ============================================
+-- RELATIONSHIPS (deduplicated triples with temporal bounds)
+-- ============================================
+-- Identity relationships (HAS_EMAIL, HAS_PHONE, HAS_HANDLE) go to entity_aliases.
+-- Temporal relationships (BORN_ON, OCCURRED_ON, etc.) use target_literal.
+-- All other relationships use target_entity_id.
+CREATE TABLE IF NOT EXISTS relationships (
+    id TEXT PRIMARY KEY,
+    source_entity_id TEXT NOT NULL REFERENCES entities(id),
+    target_entity_id TEXT REFERENCES entities(id),
+    target_literal TEXT,  -- For temporal relationships (ISO 8601)
+    relation_type TEXT NOT NULL,  -- WORKS_AT, KNOWS, CREATED, BORN_ON, etc.
+    fact TEXT NOT NULL,           -- Natural language: "Tyler works at Anthropic"
+
+    -- Bi-temporal tracking (Graphiti-style)
+    valid_at TEXT,      -- When relationship became true in reality
+    invalid_at TEXT,    -- When relationship stopped being true in reality
+    created_at TEXT NOT NULL,  -- When system first learned about it
+
+    -- Metadata
+    confidence REAL DEFAULT 1.0,
+
+    -- Exactly one of target_entity_id or target_literal must be set
+    CHECK (
+        (target_entity_id IS NOT NULL AND target_literal IS NULL) OR
+        (target_entity_id IS NULL AND target_literal IS NOT NULL)
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_relationships_source ON relationships(source_entity_id);
+CREATE INDEX IF NOT EXISTS idx_relationships_target ON relationships(target_entity_id);
+CREATE INDEX IF NOT EXISTS idx_relationships_type ON relationships(relation_type);
+CREATE INDEX IF NOT EXISTS idx_relationships_temporal ON relationships(valid_at, invalid_at);
+
+-- Uniqueness for entity-target relationships
+CREATE UNIQUE INDEX IF NOT EXISTS idx_relationships_unique_entity
+ON relationships(source_entity_id, target_entity_id, relation_type, valid_at)
+WHERE target_entity_id IS NOT NULL;
+
+-- Uniqueness for literal-target relationships
+CREATE UNIQUE INDEX IF NOT EXISTS idx_relationships_unique_literal
+ON relationships(source_entity_id, target_literal, relation_type, valid_at)
+WHERE target_literal IS NOT NULL;
+
 -- Insert initial schema version
 INSERT OR IGNORE INTO schema_version (version, applied_at)
-VALUES (15, strftime('%s', 'now'));
+VALUES (16, strftime('%s', 'now'));
 
 -- NOTE: pii_extraction_v1 analysis type is now registered via `cortex compute seed` command
 -- This matches the pattern used for convo-all-v1 and is more maintainable
