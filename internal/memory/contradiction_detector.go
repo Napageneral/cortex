@@ -107,15 +107,40 @@ func (d *ContradictionDetector) detectForRelationship(ctx context.Context, newRe
 
 	if targetEntityID.Valid {
 		// Entity-targeted relationship - find contradicting entity targets
-		rows, err := d.db.QueryContext(ctx, `
-			SELECT id FROM relationships
-			WHERE source_entity_id = ?
-			  AND relation_type = ?
-			  AND target_entity_id IS NOT NULL
-			  AND target_entity_id != ?
-			  AND invalid_at IS NULL
-			  AND id != ?
-		`, sourceEntityID, relationType, targetEntityID.String, newRelID)
+		// Only invalidate relationships that are older than the new one:
+		// - If new has valid_at: invalidate if old has NULL or earlier valid_at
+		// - If new has no valid_at: invalidate if old also has no valid_at (same-episode fallback)
+		var query string
+		var args []interface{}
+		if validAt.Valid {
+			// New relationship has a date - only invalidate older ones
+			query = `
+				SELECT id FROM relationships
+				WHERE source_entity_id = ?
+				  AND relation_type = ?
+				  AND target_entity_id IS NOT NULL
+				  AND target_entity_id != ?
+				  AND invalid_at IS NULL
+				  AND id != ?
+				  AND (valid_at IS NULL OR valid_at < ?)
+			`
+			args = []interface{}{sourceEntityID, relationType, targetEntityID.String, newRelID, validAt.String}
+		} else {
+			// New relationship has no date - only invalidate others without dates
+			// This handles same-episode conflicts when neither has explicit dates
+			query = `
+				SELECT id FROM relationships
+				WHERE source_entity_id = ?
+				  AND relation_type = ?
+				  AND target_entity_id IS NOT NULL
+				  AND target_entity_id != ?
+				  AND invalid_at IS NULL
+				  AND id != ?
+				  AND valid_at IS NULL
+			`
+			args = []interface{}{sourceEntityID, relationType, targetEntityID.String, newRelID}
+		}
+		rows, err := d.db.QueryContext(ctx, query, args...)
 
 		if err != nil {
 			return nil, fmt.Errorf("find entity contradictions: %w", err)
@@ -147,15 +172,37 @@ func (d *ContradictionDetector) detectForRelationship(ctx context.Context, newRe
 		}
 	} else if targetLiteral.Valid {
 		// Literal-targeted relationship - find contradicting literal targets
-		rows, err := d.db.QueryContext(ctx, `
-			SELECT id FROM relationships
-			WHERE source_entity_id = ?
-			  AND relation_type = ?
-			  AND target_literal IS NOT NULL
-			  AND target_literal != ?
-			  AND invalid_at IS NULL
-			  AND id != ?
-		`, sourceEntityID, relationType, targetLiteral.String, newRelID)
+		// Only invalidate relationships that are older than the new one:
+		// - If new has valid_at: invalidate if old has NULL or earlier valid_at
+		// - If new has no valid_at: invalidate if old also has no valid_at (same-episode fallback)
+		var query string
+		var args []interface{}
+		if validAt.Valid {
+			query = `
+				SELECT id FROM relationships
+				WHERE source_entity_id = ?
+				  AND relation_type = ?
+				  AND target_literal IS NOT NULL
+				  AND target_literal != ?
+				  AND invalid_at IS NULL
+				  AND id != ?
+				  AND (valid_at IS NULL OR valid_at < ?)
+			`
+			args = []interface{}{sourceEntityID, relationType, targetLiteral.String, newRelID, validAt.String}
+		} else {
+			query = `
+				SELECT id FROM relationships
+				WHERE source_entity_id = ?
+				  AND relation_type = ?
+				  AND target_literal IS NOT NULL
+				  AND target_literal != ?
+				  AND invalid_at IS NULL
+				  AND id != ?
+				  AND valid_at IS NULL
+			`
+			args = []interface{}{sourceEntityID, relationType, targetLiteral.String, newRelID}
+		}
+		rows, err := d.db.QueryContext(ctx, query, args...)
 
 		if err != nil {
 			return nil, fmt.Errorf("find literal contradictions: %w", err)

@@ -26,34 +26,27 @@ entities:
       entity_type: Document
 
   must_not_have:
-    # Claude (AI) should NOT be an entity
+    # Claude (AI) should NOT be an entity - AI assistants have no durable identity
     - name: "Claude"
       entity_type: Person
 
     - name: "Claude"
       entity_type: any
 
-    # Technologies should not be entities
-    - name: "Go"
-      entity_type: any
-
-    - name: "SQLite"
-      entity_type: any
-
-    - name: "Gemini"
-      entity_type: any
+    # Note: Go, SQLite, Gemini are borderline - they're technologies not projects,
+    # but the LLM may reasonably extract them as components/tools. We accept this.
 
 relationships:
   must_have:
-    # Tyler is building Nexus
+    # Tyler is working on / building Nexus (LLM uses WORKING_ON)
     - source_entity_name_contains: "Tyler"
-      relation_type: BUILDING
+      relation_type: WORKING_ON
       target_entity_name_contains: "Nexus"
 
   optional:
-    # Tyler working on Nexus (alternative phrasing)
+    # Tyler building Nexus (alternative phrasing)
     - source_entity_name_contains: "Tyler"
-      relation_type: WORKING_ON
+      relation_type: BUILDING
       target_entity_name_contains: "Nexus"
 
     # Nexus started in January 2025

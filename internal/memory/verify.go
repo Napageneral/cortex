@@ -671,9 +671,16 @@ func (h *VerificationHarness) relationshipMatches(expected map[string]interface{
 	}
 
 	// Check valid_at
-	if validAt, ok := expected["valid_at"].(string); ok {
-		if rel.ValidAt == nil || *rel.ValidAt != validAt {
-			return false
+	if validAtVal, exists := expected["valid_at"]; exists {
+		if validAtVal == nil {
+			// Expecting null - relationship must have nil ValidAt
+			if rel.ValidAt != nil {
+				return false
+			}
+		} else if validAt, ok := validAtVal.(string); ok {
+			if rel.ValidAt == nil || *rel.ValidAt != validAt {
+				return false
+			}
 		}
 	}
 
@@ -685,9 +692,16 @@ func (h *VerificationHarness) relationshipMatches(expected map[string]interface{
 	}
 
 	// Check invalid_at
-	if invalidAt, ok := expected["invalid_at"].(string); ok {
-		if rel.InvalidAt == nil || *rel.InvalidAt != invalidAt {
-			return false
+	if invalidAtVal, exists := expected["invalid_at"]; exists {
+		if invalidAtVal == nil {
+			// Expecting null - relationship must have nil InvalidAt
+			if rel.InvalidAt != nil {
+				return false
+			}
+		} else if invalidAt, ok := invalidAtVal.(string); ok {
+			if rel.InvalidAt == nil || *rel.InvalidAt != invalidAt {
+				return false
+			}
 		}
 	}
 

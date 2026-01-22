@@ -281,6 +281,7 @@ All other relationships point to entities:
 | Personal | BORN_IN, LIVES_IN | Location |
 | Personal | HAS_PET | Pet |
 | Professional | WORKS_AT, OWNS, FOUNDED | Company |
+| Professional | CUSTOMER_OF, USES | Company (vendor/service) |
 | Professional | ATTENDED | Company (school) or Event |
 | Social | KNOWS, FRIEND_OF, SPOUSE_OF, PARENT_OF, DATING | Person |
 | Projects | CREATED, BUILDING, WORKING_ON, CONTRIBUTED_TO | Project |
@@ -296,10 +297,19 @@ All other relationships point to entities:
 - fact: Natural language description
 - source_type: self_disclosed / mentioned / inferred
 
-### Optional Fields
+### Temporal Fields (valid_at / invalid_at)
 
-- valid_at: ISO date when relationship became true
-- invalid_at: ISO date when relationship stopped being true
+Extract dates when relationships started (valid_at) or ended (invalid_at):
+
+| Signal Words | Field | Example |
+|--------------|-------|---------|
+| "started at", "joined", "began", "since" | valid_at | "I started at Anthropic" → valid_at: 2026-01 |
+| "left", "quit", "used to", "former", "ex-", "previously" | invalid_at | "I left Intent Systems" → invalid_at: 2025-12 |
+| "for N months/years", "been together since" | valid_at | "dating for 6 months" → valid_at: 6 months ago |
+
+Use REFERENCE_TIME to resolve relative dates ("last month" = month before reference_time).
+
+**Critical**: When someone says "I left X", extract the relationship WITH invalid_at set. The fact becomes "Person used to work at X" with invalid_at populated.
 
 ### Source Type Guidelines
 

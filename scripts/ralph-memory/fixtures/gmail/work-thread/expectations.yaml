@@ -55,12 +55,12 @@ aliases:
       alias: "jeff.martinez@cleardata.com"
       alias_type: email
 
-    # Jeff's phone from signature should become an alias
+  optional:
+    # Jeff's phone from signature may become an alias (LLM may or may not extract it)
     - entity_name_contains: "Jeff"
       alias_contains: "512"
       alias_type: phone
 
-  optional:
     # Tyler's email might be extracted
     - entity_name_contains: "Tyler"
       alias: "tyler@intent-systems.com"

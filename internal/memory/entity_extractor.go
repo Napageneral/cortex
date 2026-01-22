@@ -83,15 +83,39 @@ func (e *EntityExtractor) Extract(ctx context.Context, input EntityExtractionInp
 		return nil, fmt.Errorf("parse response JSON: %w (response: %s)", err, text)
 	}
 
-	// Validate extracted entities
-	for i, entity := range result.ExtractedEntities {
+	// Filter and validate extracted entities
+	filtered := make([]ExtractedEntity, 0, len(result.ExtractedEntities))
+	for _, entity := range result.ExtractedEntities {
+		// Filter out AI assistants (per spec: "AI agents — no durable identity")
+		if isAIAssistant(entity.Name) {
+			continue
+		}
+		// Validate entity type
 		if !IsValidEntityTypeID(entity.EntityTypeID) {
 			// Default to Entity (type 0) if invalid
-			result.ExtractedEntities[i].EntityTypeID = EntityTypeEntity
+			entity.EntityTypeID = EntityTypeEntity
 		}
+		filtered = append(filtered, entity)
 	}
+	result.ExtractedEntities = filtered
 
 	return &result, nil
+}
+
+// isAIAssistant returns true if the name refers to a known AI assistant.
+// Per the spec, AI agents have no durable identity and should not be entities.
+func isAIAssistant(name string) bool {
+	lowerName := strings.ToLower(strings.TrimSpace(name))
+	aiAssistants := []string{
+		"claude", "gpt", "chatgpt", "gpt-4", "gpt-3", "gpt-3.5",
+		"gemini", "bard", "copilot", "llama", "mistral", "anthropic assistant",
+	}
+	for _, ai := range aiAssistants {
+		if lowerName == ai {
+			return true
+		}
+	}
+	return false
 }
 
 // buildPrompt constructs the extraction prompt from the template.
