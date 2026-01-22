@@ -550,3 +550,40 @@
 - Result struct aggregates counts from all component results
 - Batch processing is just a loop over Process()
 
+### QueryEngine Pattern
+- QueryOptions struct holds all filtering options (Direction, RelationTypes, IncludeInvalidated, AsOfTime, Limit)
+- DefaultQueryOptions() provides sensible defaults (DirectionBoth, no type filter, exclude invalidated, no limit)
+- Bidirectional traversal queries both outgoing (entity is source) and incoming (entity is target)
+- Temporal filtering requires both valid_at and invalid_at checks when AsOfTime is set
+- Use sql.NullString for optional fields (valid_at, invalid_at, target_literal, etc.)
+- LEFT JOIN for literal-target relationships (no target entity to join)
+
+---
+## 2026-01-22 - [MS-020] Implement graph traversal queries
+- Created QueryEngine struct in internal/memory/query_engine.go
+- Implemented GetRelatedEntities: returns entities related via specified relationship types
+- Implemented GetEntityRelationships: returns all relationships for an entity (including literals)
+- Both methods support:
+  - Temporal filtering: valid_at <= asOf AND (invalid_at IS NULL OR invalid_at > asOf)
+  - Bidirectional traversal: outgoing (entity is source) or incoming (entity is target) or both
+  - Relation type filtering: restrict to specific relationship types
+  - IncludeInvalidated option: include relationships with invalid_at set
+  - AsOfTime option: query relationships valid at a specific point in time
+  - Limit option: cap number of results
+- Helper methods: GetEntity, FindEntitiesByName, FindEntitiesByRelationType, GetEntityAliases
+- Extended Entity struct (in entity_embedder.go) to include all fields for query results
+- Added EntityAlias struct for alias query results
+
+**Files changed:**
+- `internal/memory/query_engine.go` - QueryEngine implementation (680 lines)
+- `internal/memory/query_engine_test.go` - 15 unit tests (640 lines)
+- `internal/memory/entity_embedder.go` - Extended Entity struct
+
+**Learnings:**
+- Entity struct was minimal (ID, CanonicalName only) - needed to extend for full query results
+- Temporal filtering requires BOTH bounds: valid_at <= asOf AND invalid_at > asOf
+- Use sql.NullString for all optional TEXT fields in SQLite
+- Bidirectional queries are best split into separate outgoing/incoming functions for clarity
+- QueryDirection enum (string type) is more readable than bool flags
+- LEFT JOIN needed when target can be either entity_id or literal
+

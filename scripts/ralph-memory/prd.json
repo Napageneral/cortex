@@ -309,8 +309,8 @@
         "Unit tests for traversal queries"
       ],
       "priority": 20,
-      "passes": false,
-      "notes": "See MEMORY_SYSTEM_SPEC.md §10.12. Basic graph queries."
+      "passes": true,
+      "notes": "See MEMORY_SYSTEM_SPEC.md §10.12. Completed: QueryEngine with GetRelatedEntities, GetEntityRelationships, GetEntity, FindEntitiesByName, FindEntitiesByRelationType, GetEntityAliases. Supports temporal filtering (AsOfTime for valid_at/invalid_at), bidirectional traversal, relation type filtering, limit. 15 unit tests."
     },
     {
       "id": "MS-021",

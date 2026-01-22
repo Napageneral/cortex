@@ -102,10 +102,17 @@ func (e *EntityEmbedder) EmbedEntities(ctx context.Context, entities []Entity) (
 	return count, nil
 }
 
-// Entity represents an entity for embedding purposes.
+// Entity represents an entity in the graph.
 type Entity struct {
-	ID            string
-	CanonicalName string
+	ID            string  `json:"id"`
+	CanonicalName string  `json:"canonical_name"`
+	EntityTypeID  int     `json:"entity_type_id"`
+	Summary       *string `json:"summary,omitempty"`
+	Origin        string  `json:"origin"`
+	Confidence    float64 `json:"confidence"`
+	MergedInto    *string `json:"merged_into,omitempty"`
+	CreatedAt     string  `json:"created_at"`
+	UpdatedAt     string  `json:"updated_at"`
 }
 
 // embeddingExists checks if an up-to-date embedding exists for the entity.
