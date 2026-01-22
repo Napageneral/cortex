@@ -249,7 +249,7 @@ CREATE INDEX IF NOT EXISTS idx_merge_suggestions_confidence ON merge_suggestions
 CREATE INDEX IF NOT EXISTS idx_merge_suggestions_person1 ON merge_suggestions(person1_id);
 CREATE INDEX IF NOT EXISTS idx_merge_suggestions_person2 ON merge_suggestions(person2_id);
 
--- Person facts: Rich identity graph data extracted from segments
+-- Person facts: Rich identity graph data extracted from episodes
 -- Stores all PII and enrichment data with attribution and confidence
 CREATE TABLE IF NOT EXISTS person_facts (
     id TEXT PRIMARY KEY,
@@ -264,7 +264,7 @@ CREATE TABLE IF NOT EXISTS person_facts (
     confidence REAL DEFAULT 0.5,    -- 0.0-1.0
     source_type TEXT NOT NULL,      -- 'self_disclosed', 'mentioned', 'inferred', 'signature'
     source_channel TEXT,            -- 'imessage', 'gmail', etc.
-    source_segment_id TEXT,    -- segment where extracted
+    source_episode_id TEXT,    -- episode where extracted
     source_facet_id TEXT,           -- link to facets table
     evidence TEXT,                  -- quote from message
 
@@ -286,7 +286,7 @@ CREATE INDEX IF NOT EXISTS idx_person_facts_value ON person_facts(fact_value);
 CREATE INDEX IF NOT EXISTS idx_person_facts_hard_id ON person_facts(fact_type, fact_value)
     WHERE is_hard_identifier = 1;
 
--- Unattributed facts: Facts extracted from segments that couldn't be attributed to a specific person
+-- Unattributed facts: Facts extracted from episodes that couldn't be attributed to a specific person
 -- For example: phone numbers shared without context about whose number it is
 CREATE TABLE IF NOT EXISTS unattributed_facts (
     id TEXT PRIMARY KEY,
@@ -295,7 +295,7 @@ CREATE TABLE IF NOT EXISTS unattributed_facts (
 
     shared_by_person_id TEXT REFERENCES persons(id),
     source_event_id TEXT REFERENCES events(id),
-    source_segment_id TEXT REFERENCES segments(id),
+    source_episode_id TEXT REFERENCES episodes(id),
     context TEXT,
     possible_attributions TEXT,     -- JSON array of guesses
 
@@ -315,12 +315,12 @@ CREATE TABLE IF NOT EXISTS candidate_mentions (
     id TEXT PRIMARY KEY,
     reference TEXT NOT NULL,
     known_facts_json TEXT,                -- JSON map of extracted facts
-    source_segment_id TEXT REFERENCES segments(id),
+    source_episode_id TEXT REFERENCES episodes(id),
     created_at INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_candidate_mentions_reference ON candidate_mentions(reference);
-CREATE INDEX IF NOT EXISTS idx_candidate_mentions_segment ON candidate_mentions(source_segment_id);
+CREATE INDEX IF NOT EXISTS idx_candidate_mentions_episode ON candidate_mentions(source_episode_id);
 
 -- Merge events: Proposed and executed identity merges
 -- Tracks both pending suggestions and completed merges with full audit trail
@@ -344,8 +344,8 @@ CREATE TABLE IF NOT EXISTS merge_events (
 CREATE INDEX IF NOT EXISTS idx_merge_events_status ON merge_events(status);
 CREATE INDEX IF NOT EXISTS idx_merge_events_persons ON merge_events(source_person_id, target_person_id);
 
--- Segment definitions: HOW to chunk events into segments
-CREATE TABLE IF NOT EXISTS segment_definitions (
+-- Episode definitions: HOW to chunk events into episodes
+CREATE TABLE IF NOT EXISTS episode_definitions (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,             -- "imessage_90min", "gmail_thread", "cross_channel_persona"
 
@@ -361,13 +361,13 @@ CREATE TABLE IF NOT EXISTS segment_definitions (
     updated_at INTEGER NOT NULL
 );
 
--- Segments: instances produced by applying a definition
-CREATE TABLE IF NOT EXISTS segments (
+-- Episodes: instances produced by applying a definition
+CREATE TABLE IF NOT EXISTS episodes (
     id TEXT PRIMARY KEY,
-    definition_id TEXT NOT NULL REFERENCES segment_definitions(id),
+    definition_id TEXT NOT NULL REFERENCES episode_definitions(id),
 
     -- Scope info (denormalized for queries)
-    -- These can be NULL for cross-channel/cross-thread segments
+    -- These can be NULL for cross-channel/cross-thread episodes
     channel TEXT,                          -- NULL if spans multiple channels
     thread_id TEXT REFERENCES threads(id), -- NULL if spans multiple threads
 
@@ -385,20 +385,20 @@ CREATE TABLE IF NOT EXISTS segments (
     created_at INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_segments_definition ON segments(definition_id);
-CREATE INDEX IF NOT EXISTS idx_segments_channel ON segments(channel);
-CREATE INDEX IF NOT EXISTS idx_segments_thread ON segments(thread_id);
-CREATE INDEX IF NOT EXISTS idx_segments_time ON segments(start_time, end_time);
+CREATE INDEX IF NOT EXISTS idx_episodes_definition ON episodes(definition_id);
+CREATE INDEX IF NOT EXISTS idx_episodes_channel ON episodes(channel);
+CREATE INDEX IF NOT EXISTS idx_episodes_thread ON episodes(thread_id);
+CREATE INDEX IF NOT EXISTS idx_episodes_time ON episodes(start_time, end_time);
 
--- Segment events: which events belong to which segment
-CREATE TABLE IF NOT EXISTS segment_events (
-    segment_id TEXT NOT NULL REFERENCES segments(id) ON DELETE CASCADE,
+-- Episode events: which events belong to which episode
+CREATE TABLE IF NOT EXISTS episode_events (
+    episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
     event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-    position INTEGER NOT NULL,             -- order within segment (1-indexed)
-    PRIMARY KEY (segment_id, event_id)
+    position INTEGER NOT NULL,             -- order within episode (1-indexed)
+    PRIMARY KEY (episode_id, event_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_segment_events_event ON segment_events(event_id);
+CREATE INDEX IF NOT EXISTS idx_episode_events_event ON episode_events(event_id);
 
 -- Analysis types: defines what kind of analysis this is
 CREATE TABLE IF NOT EXISTS analysis_types (
@@ -422,11 +422,11 @@ CREATE TABLE IF NOT EXISTS analysis_types (
     updated_at INTEGER NOT NULL
 );
 
--- Analysis runs: one per (analysis_type, segment) pair
+-- Analysis runs: one per (analysis_type, episode) pair
 CREATE TABLE IF NOT EXISTS analysis_runs (
     id TEXT PRIMARY KEY,
     analysis_type_id TEXT NOT NULL REFERENCES analysis_types(id),
-    segment_id TEXT NOT NULL REFERENCES segments(id),
+    episode_id TEXT NOT NULL REFERENCES episodes(id),
 
     status TEXT NOT NULL,                -- "pending", "running", "completed", "failed", "blocked"
 
@@ -444,18 +444,18 @@ CREATE TABLE IF NOT EXISTS analysis_runs (
 
     created_at INTEGER NOT NULL,
 
-    UNIQUE(analysis_type_id, segment_id)
+    UNIQUE(analysis_type_id, episode_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_analysis_runs_type ON analysis_runs(analysis_type_id);
-CREATE INDEX IF NOT EXISTS idx_analysis_runs_segment ON analysis_runs(segment_id);
+CREATE INDEX IF NOT EXISTS idx_analysis_runs_episode ON analysis_runs(episode_id);
 CREATE INDEX IF NOT EXISTS idx_analysis_runs_status ON analysis_runs(status);
 
 -- Facets: extracted queryable values from structured analyses
 CREATE TABLE IF NOT EXISTS facets (
     id TEXT PRIMARY KEY,
     analysis_run_id TEXT NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
-    segment_id TEXT NOT NULL REFERENCES segments(id) ON DELETE CASCADE,
+    episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
 
     -- What kind of facet
     facet_type TEXT NOT NULL,            -- "entity", "topic", "emotion", "pii_email", "summary", etc.
@@ -474,7 +474,7 @@ CREATE TABLE IF NOT EXISTS facets (
 );
 
 CREATE INDEX IF NOT EXISTS idx_facets_type_value ON facets(facet_type, value);
-CREATE INDEX IF NOT EXISTS idx_facets_segment ON facets(segment_id);
+CREATE INDEX IF NOT EXISTS idx_facets_episode ON facets(episode_id);
 CREATE INDEX IF NOT EXISTS idx_facets_analysis_run ON facets(analysis_run_id);
 CREATE INDEX IF NOT EXISTS idx_facets_person ON facets(person_id);
 CREATE INDEX IF NOT EXISTS idx_facets_value ON facets(value);
@@ -484,7 +484,7 @@ CREATE TABLE IF NOT EXISTS embeddings (
     id TEXT PRIMARY KEY,
 
     -- What is embedded
-    entity_type TEXT NOT NULL,           -- "event", "segment", "facet", "person", "thread"
+    entity_type TEXT NOT NULL,           -- "event", "episode", "facet", "person", "thread"
     entity_id TEXT NOT NULL,             -- ID of the embedded entity
 
     -- The embedding
@@ -528,9 +528,35 @@ CREATE TRIGGER IF NOT EXISTS events_fts_delete AFTER DELETE ON events BEGIN
     DELETE FROM events_fts WHERE event_id = old.id;
 END;
 
+-- ============================================
+-- ENTITIES (canonical, deduplicated)
+-- ============================================
+-- This generalizes People/Contacts to all entity types.
+-- A "Person" entity is just an entity with entity_type_id=1.
+-- Entity types: 0=Entity, 1=Person, 2=Company, 3=Project, 4=Location, 5=Event, 6=Document, 7=Pet
+CREATE TABLE IF NOT EXISTS entities (
+    id TEXT PRIMARY KEY,
+    canonical_name TEXT NOT NULL,
+    entity_type_id INTEGER NOT NULL,  -- ID from configured entity types (see §3.2)
+
+    summary TEXT,               -- Auto-generated from relationships + episodes
+    summary_updated_at TEXT,    -- When summary was last regenerated
+
+    -- How this entity was created
+    origin TEXT NOT NULL,       -- 'contact_import', 'extracted', 'manual'
+    confidence REAL DEFAULT 1.0,
+    merged_into TEXT REFERENCES entities(id),  -- Non-null if this entity was merged
+
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(entity_type_id);
+CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(canonical_name);
+
 -- Insert initial schema version
 INSERT OR IGNORE INTO schema_version (version, applied_at)
-VALUES (12, strftime('%s', 'now'));
+VALUES (14, strftime('%s', 'now'));
 
 -- NOTE: pii_extraction_v1 analysis type is now registered via `cortex compute seed` command
 -- This matches the pattern used for convo-all-v1 and is more maintainable

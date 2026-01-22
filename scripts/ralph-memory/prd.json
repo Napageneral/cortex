@@ -33,8 +33,8 @@
         "go build succeeds"
       ],
       "priority": 2,
-      "passes": false,
-      "notes": "See MEMORY_SYSTEM_SPEC.md §3.4. entity_type_id is integer from configured types."
+      "passes": true,
+      "notes": "See MEMORY_SYSTEM_SPEC.md §3.4. entity_type_id is integer from configured types. Completed: Added entities table to schema.sql with all columns and indexes per spec."
     },
     {
       "id": "MS-003",

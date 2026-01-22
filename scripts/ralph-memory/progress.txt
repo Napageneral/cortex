@@ -61,3 +61,21 @@
 - Keep JSON keys stable for backward compatibility with queued jobs
 - search/types.go already had backward compatibility aliases (SegmentSearchRequest = EpisodeSearchRequest)
 
+---
+## 2026-01-21 - [MS-002] Add entities table to schema
+- Added `entities` table to schema.sql following spec §3.4
+- Columns: id, canonical_name, entity_type_id, summary, summary_updated_at, origin, confidence, merged_into, created_at, updated_at
+- Added indexes: idx_entities_type (entity_type_id), idx_entities_name (canonical_name)
+- Schema version incremented from 13 to 14
+- Uses TEXT for timestamps (ISO 8601 format) per spec convention
+- entity_type_id maps to code-defined types (0=Entity, 1=Person, 2=Company, 3=Project, 4=Location, 5=Event, 6=Document, 7=Pet)
+
+**Files changed:**
+- `internal/db/schema.sql` - Added entities table and indexes
+
+**Learnings:**
+- Schema uses TEXT for timestamp columns with ISO 8601 format (not INTEGER Unix epoch like some older tables)
+- merged_into uses self-referential FK for tracking entity merges
+- Table has IF NOT EXISTS clause for safe re-application
+- Indexes also use IF NOT EXISTS for idempotent schema application
+
