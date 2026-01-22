@@ -351,6 +351,22 @@ cortex chunk run imessage_3hr --json
 - All identity commands support --json flag for programmatic access
 - Auto-merge flow: detection → suggestion → automatic execution for confidence >= 0.8
 - Manual review flow: detection → suggestion → human approval → execution
+- Memory system extraction: EntityExtractor in internal/memory for graph-independent entity extraction
+- EntityExtractor uses Gemini's ResponseMimeType: "application/json" for structured JSON output
+- Extraction outputs temporary IDs (0, 1, 2...); resolution assigns real UUIDs later
+- Entity types defined in code (internal/memory/entity_types.go), not in database
+- Entity resolution: EntityResolver implements 3-step resolution (alias match → embedding similarity → context scoring)
+- Resolution creates uuid_map{} mapping temp IDs to resolved UUIDs for relationship extraction
+- Conservative resolution strategy: prefer duplicates over false merges; ambiguous cases create entity_merge_candidates
+- Resolution excludes merged entities (merged_into IS NOT NULL) from candidate search
+- Relationship extraction: RelationshipExtractor runs after entity resolution with resolved UUIDs
+- RelationshipExtractor input includes resolved entities with UUIDs; LLM uses temp IDs (0, 1, 2...) for reference
+- Relationship types: target_entity_id for entity targets, target_literal for identity/temporal relationships
+- Identity relationship types (HAS_EMAIL, HAS_PHONE, HAS_HANDLE, HAS_USERNAME, ALSO_KNOWN_AS) → promoted to aliases, not stored in relationships
+- Temporal relationship types (BORN_ON, ANNIVERSARY_ON, OCCURRED_ON, SCHEDULED_FOR, STARTED_ON, ENDED_ON) → target_literal with ISO 8601 dates
+- source_type values: 'self_disclosed' (person said it about themselves), 'mentioned' (someone else said it), 'inferred' (implied but not explicit)
+- Relationship validation: filters invalid source/target IDs, empty fields; defaults empty source_type to 'mentioned'
+- GetSourceEntityUUID/GetTargetEntityUUID helpers map temp IDs to real UUIDs for storage
 
 ## Schema Quick Reference
 
