@@ -479,13 +479,17 @@ CREATE INDEX IF NOT EXISTS idx_facets_analysis_run ON facets(analysis_run_id);
 CREATE INDEX IF NOT EXISTS idx_facets_person ON facets(person_id);
 CREATE INDEX IF NOT EXISTS idx_facets_value ON facets(value);
 
--- Embeddings: Vector embeddings for entities
+-- ============================================
+-- EMBEDDINGS (unified for all embeddable types)
+-- ============================================
+-- Unified embedding storage for events, episodes, entities, and relationships.
+-- target_type + target_id identify what was embedded.
 CREATE TABLE IF NOT EXISTS embeddings (
     id TEXT PRIMARY KEY,
 
     -- What is embedded
-    entity_type TEXT NOT NULL,           -- "event", "episode", "facet", "person", "thread"
-    entity_id TEXT NOT NULL,             -- ID of the embedded entity
+    target_type TEXT NOT NULL,           -- "event", "episode", "entity", "relationship"
+    target_id TEXT NOT NULL,             -- ID of the embedded target
 
     -- The embedding
     model TEXT NOT NULL,                 -- "gemini-embedding-004", etc.
@@ -497,10 +501,10 @@ CREATE TABLE IF NOT EXISTS embeddings (
 
     created_at INTEGER NOT NULL,
 
-    UNIQUE(entity_type, entity_id, model)
+    UNIQUE(target_type, target_id, model)
 );
 
-CREATE INDEX IF NOT EXISTS idx_embeddings_entity ON embeddings(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_embeddings_target ON embeddings(target_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_embeddings_model ON embeddings(model);
 
 -- FTS5 full-text search index for events
@@ -707,7 +711,7 @@ CREATE INDEX IF NOT EXISTS idx_entity_merge_events_target ON entity_merge_events
 
 -- Insert initial schema version
 INSERT OR IGNORE INTO schema_version (version, applied_at)
-VALUES (19, strftime('%s', 'now'));
+VALUES (20, strftime('%s', 'now'));
 
 -- NOTE: pii_extraction_v1 analysis type is now registered via `cortex compute seed` command
 -- This matches the pattern used for convo-all-v1 and is more maintainable

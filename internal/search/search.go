@@ -27,14 +27,14 @@ func NewSearcher(db *sql.DB, embedder Embedder) *Searcher {
 	return &Searcher{db: db, embedder: embedder}
 }
 
-// SearchSegments performs embedding search over segments.
-func (s *Searcher) SearchSegments(ctx context.Context, req SegmentSearchRequest) (SegmentSearchResponse, error) {
+// SearchEpisodes performs embedding search over episodes.
+func (s *Searcher) SearchEpisodes(ctx context.Context, req EpisodeSearchRequest) (EpisodeSearchResponse, error) {
 	if s.db == nil {
-		return SegmentSearchResponse{}, errors.New("search: db is nil")
+		return EpisodeSearchResponse{}, errors.New("search: db is nil")
 	}
 	query := strings.TrimSpace(req.Query)
 	if query == "" {
-		return SegmentSearchResponse{}, errors.New("search: query is required")
+		return EpisodeSearchResponse{}, errors.New("search: query is required")
 	}
 
 	limit := req.Limit
@@ -60,11 +60,11 @@ func (s *Searcher) SearchSegments(ctx context.Context, req SegmentSearchRequest)
 	embeddingUsed := false
 	if useEmbeddings && len(queryEmbedding) == 0 {
 		if s.embedder == nil {
-			return SegmentSearchResponse{}, errors.New("search: embedder not configured")
+			return EpisodeSearchResponse{}, errors.New("search: embedder not configured")
 		}
 		embedding, err := s.embedder.Embed(query, model)
 		if err != nil || len(embedding) == 0 {
-			return SegmentSearchResponse{}, errors.New("search: failed to generate query embedding")
+			return EpisodeSearchResponse{}, errors.New("search: failed to generate query embedding")
 		}
 		queryEmbedding = embedding
 	}
@@ -73,18 +73,18 @@ func (s *Searcher) SearchSegments(ctx context.Context, req SegmentSearchRequest)
 	}
 
 	querySQL := `
-		SELECT e.entity_id, e.embedding_blob, e.dimension,
-		       s.channel, s.thread_id, s.start_time, s.end_time, s.event_count,
+		SELECT e.target_id, e.embedding_blob, e.dimension,
+		       ep.channel, ep.thread_id, ep.start_time, ep.end_time, ep.event_count,
 		       d.name, t.name
 		FROM embeddings e
-		JOIN segments s ON e.entity_id = s.id
-		LEFT JOIN segment_definitions d ON s.definition_id = d.id
-		LEFT JOIN threads t ON s.thread_id = t.id
-		WHERE e.entity_type = 'segment' AND e.model = ?
+		JOIN episodes ep ON e.target_id = ep.id
+		LEFT JOIN episode_definitions d ON ep.definition_id = d.id
+		LEFT JOIN threads t ON ep.thread_id = t.id
+		WHERE e.target_type = 'episode' AND e.model = ?
 	`
 	args := []any{model}
 	if req.Channel != "" {
-		querySQL += " AND s.channel = ?"
+		querySQL += " AND ep.channel = ?"
 		args = append(args, req.Channel)
 	}
 	if req.DefinitionName != "" {
@@ -94,25 +94,25 @@ func (s *Searcher) SearchSegments(ctx context.Context, req SegmentSearchRequest)
 
 	rows, err := s.db.QueryContext(ctx, querySQL, args...)
 	if err != nil {
-		return SegmentSearchResponse{}, err
+		return EpisodeSearchResponse{}, err
 	}
 	defer rows.Close()
 
-	results := make([]SegmentSearchResult, 0)
+	results := make([]EpisodeSearchResult, 0)
 	for rows.Next() {
 		var (
-			segmentID     string
-			blob          []byte
-			dimension     int
-			channel       sql.NullString
-			threadID      sql.NullString
-			startTime     int64
-			endTime       int64
-			eventCount    int
+			episodeID      string
+			blob           []byte
+			dimension      int
+			channel        sql.NullString
+			threadID       sql.NullString
+			startTime      int64
+			endTime        int64
+			eventCount     int
 			definitionName sql.NullString
-			threadName    sql.NullString
+			threadName     sql.NullString
 		)
-		if err := rows.Scan(&segmentID, &blob, &dimension, &channel, &threadID, &startTime, &endTime, &eventCount, &definitionName, &threadName); err != nil {
+		if err := rows.Scan(&episodeID, &blob, &dimension, &channel, &threadID, &startTime, &endTime, &eventCount, &definitionName, &threadName); err != nil {
 			continue
 		}
 		if len(queryEmbedding) == 0 || dimension != len(queryEmbedding) {
@@ -128,8 +128,8 @@ func (s *Searcher) SearchSegments(ctx context.Context, req SegmentSearchRequest)
 			continue
 		}
 
-		result := SegmentSearchResult{
-			SegmentID:      segmentID,
+		result := EpisodeSearchResult{
+			EpisodeID:      episodeID,
 			DefinitionName: definitionName.String,
 			Channel:        channel.String,
 			ThreadName:     threadName.String,
@@ -144,7 +144,7 @@ func (s *Searcher) SearchSegments(ctx context.Context, req SegmentSearchRequest)
 		results = append(results, result)
 	}
 	if err := rows.Err(); err != nil {
-		return SegmentSearchResponse{}, err
+		return EpisodeSearchResponse{}, err
 	}
 
 	sort.Slice(results, func(i, j int) bool {
@@ -154,12 +154,18 @@ func (s *Searcher) SearchSegments(ctx context.Context, req SegmentSearchRequest)
 		results = results[:limit]
 	}
 
-	return SegmentSearchResponse{
+	return EpisodeSearchResponse{
 		Query:         query,
 		Model:         model,
 		EmbeddingUsed: embeddingUsed,
 		Results:       results,
 	}, nil
+}
+
+// SearchSegments is a backward-compatible alias for SearchEpisodes.
+// Deprecated: Use SearchEpisodes instead.
+func (s *Searcher) SearchSegments(ctx context.Context, req SegmentSearchRequest) (SegmentSearchResponse, error) {
+	return s.SearchEpisodes(ctx, req)
 }
 
 // SearchDocuments performs hybrid search over document_heads + events.
@@ -370,10 +376,10 @@ func loadDocuments(ctx context.Context, db *sql.DB, channels []string) ([]docume
 
 func loadDocumentEmbeddings(ctx context.Context, db *sql.DB, model string, channels []string) (map[string][]float64, error) {
 	query := `
-		SELECT e.entity_id, e.embedding_blob, e.dimension
+		SELECT e.target_id, e.embedding_blob, e.dimension
 		FROM embeddings e
-		JOIN document_heads d ON d.doc_key = e.entity_id
-		WHERE e.entity_type = 'document' AND e.model = ?
+		JOIN document_heads d ON d.doc_key = e.target_id
+		WHERE e.target_type = 'document' AND e.model = ?
 	`
 	args := []any{model}
 	if len(channels) > 0 {
@@ -823,11 +829,11 @@ func (s *Searcher) searchEventsFTS(ctx context.Context, query string, channels [
 }
 
 func (s *Searcher) searchEventsVector(ctx context.Context, queryEmbedding []float64, model string, channels []string, threadID string, since, until int64, limit int) map[string]float64 {
-	// Load segment embeddings and find matching events
+	// Load episode embeddings and find matching events
 	query := `
-		SELECT e.entity_id, e.embedding_blob, e.dimension
+		SELECT e.target_id, e.embedding_blob, e.dimension
 		FROM embeddings e
-		WHERE e.entity_type = 'segment' AND e.model = ?`
+		WHERE e.target_type = 'episode' AND e.model = ?`
 	args := []any{model}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -837,16 +843,16 @@ func (s *Searcher) searchEventsVector(ctx context.Context, queryEmbedding []floa
 	defer rows.Close()
 
 	type candidate struct {
-		segmentID string
+		episodeID string
 		score     float64
 	}
 	var candidates []candidate
 
 	for rows.Next() {
-		var segmentID string
+		var episodeID string
 		var blob []byte
 		var dim int
-		if err := rows.Scan(&segmentID, &blob, &dim); err != nil {
+		if err := rows.Scan(&episodeID, &blob, &dim); err != nil {
 			continue
 		}
 		if dim != len(queryEmbedding) {
@@ -855,7 +861,7 @@ func (s *Searcher) searchEventsVector(ctx context.Context, queryEmbedding []floa
 		embedding := blobToFloat64Slice(blob)
 		score := normalizeCosine(cosineSimilarity(queryEmbedding, embedding))
 		if score > 0.1 { // Threshold
-			candidates = append(candidates, candidate{segmentID: segmentID, score: score})
+			candidates = append(candidates, candidate{episodeID: episodeID, score: score})
 		}
 	}
 
@@ -871,27 +877,27 @@ func (s *Searcher) searchEventsVector(ctx context.Context, queryEmbedding []floa
 		candidates = candidates[:limit]
 	}
 
-	// Map segments to events
-	segmentIDs := make([]string, len(candidates))
-	segmentScores := make(map[string]float64)
+	// Map episodes to events
+	episodeIDs := make([]string, len(candidates))
+	episodeScores := make(map[string]float64)
 	for i, c := range candidates {
-		segmentIDs[i] = c.segmentID
-		segmentScores[c.segmentID] = c.score
+		episodeIDs[i] = c.episodeID
+		episodeScores[c.episodeID] = c.score
 	}
 
-	// Query segment_events to get event IDs
-	placeholders := make([]string, len(segmentIDs))
-	args2 := make([]any, len(segmentIDs))
-	for i, id := range segmentIDs {
+	// Query episode_events to get event IDs
+	placeholders := make([]string, len(episodeIDs))
+	args2 := make([]any, len(episodeIDs))
+	for i, id := range episodeIDs {
 		placeholders[i] = "?"
 		args2[i] = id
 	}
 
 	eventQuery := `
-		SELECT se.segment_id, se.event_id, e.channel, e.thread_id, e.timestamp
-		FROM segment_events se
-		JOIN events e ON e.id = se.event_id
-		WHERE se.segment_id IN (` + strings.Join(placeholders, ",") + `)`
+		SELECT ee.episode_id, ee.event_id, e.channel, e.thread_id, e.timestamp
+		FROM episode_events ee
+		JOIN events e ON e.id = ee.event_id
+		WHERE ee.episode_id IN (` + strings.Join(placeholders, ",") + `)`
 
 	// Add filters
 	var filterClauses []string
@@ -926,16 +932,16 @@ func (s *Searcher) searchEventsVector(ctx context.Context, queryEmbedding []floa
 	}
 	defer rows2.Close()
 
-	// Map event to best segment score
+	// Map event to best episode score
 	result := make(map[string]float64)
 	for rows2.Next() {
-		var segmentID, eventID, channel string
+		var episodeID, eventID, channel string
 		var threadIDNullable sql.NullString
 		var timestamp int64
-		if err := rows2.Scan(&segmentID, &eventID, &channel, &threadIDNullable, &timestamp); err != nil {
+		if err := rows2.Scan(&episodeID, &eventID, &channel, &threadIDNullable, &timestamp); err != nil {
 			continue
 		}
-		score := segmentScores[segmentID]
+		score := episodeScores[episodeID]
 		if existing, ok := result[eventID]; !ok || score > existing {
 			result[eventID] = score
 		}

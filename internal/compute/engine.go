@@ -440,8 +440,8 @@ func (e *Engine) EnqueueEmbeddings(ctx context.Context) (int, error) {
 		SELECT ep.id FROM episodes ep
 		WHERE NOT EXISTS (
 			SELECT 1 FROM embeddings em
-			WHERE em.entity_type = 'episode'
-			AND em.entity_id = ep.id
+			WHERE em.target_type = 'episode'
+			AND em.target_id = ep.id
 		)
 	`)
 	if err != nil {
@@ -492,8 +492,8 @@ func (e *Engine) EnqueueFacetEmbeddings(ctx context.Context) (int, error) {
 		SELECT f.id FROM facets f
 		WHERE NOT EXISTS (
 			SELECT 1 FROM embeddings em
-			WHERE em.entity_type = 'facet'
-			AND em.entity_id = f.id
+			WHERE em.target_type = 'facet'
+			AND em.target_id = f.id
 		)
 	`)
 	if err != nil {
@@ -543,8 +543,8 @@ func (e *Engine) EnqueuePersonEmbeddings(ctx context.Context) (int, error) {
 		SELECT p.id FROM persons p
 		WHERE NOT EXISTS (
 			SELECT 1 FROM embeddings em
-			WHERE em.entity_type = 'person'
-			AND em.entity_id = p.id
+			WHERE em.target_type = 'person'
+			AND em.target_id = p.id
 		)
 	`)
 	if err != nil {
@@ -594,8 +594,8 @@ func (e *Engine) EnqueueDocumentEmbeddings(ctx context.Context) (int, error) {
 		SELECT d.doc_key, d.content_hash
 		FROM document_heads d
 		LEFT JOIN embeddings em
-		  ON em.entity_type = 'document'
-		 AND em.entity_id = d.doc_key
+		  ON em.target_type = 'document'
+		 AND em.target_id = d.doc_key
 		 AND em.model = ?
 		WHERE em.id IS NULL
 		   OR em.source_text_hash IS NULL
@@ -976,10 +976,10 @@ func (e *Engine) handleEmbeddingJob(ctx context.Context, job *queue.Job) error {
 	apply := func(tx *sql.Tx) error {
 		_, err := tx.Exec(`
 			INSERT INTO embeddings (
-				id, entity_type, entity_id, model,
+				id, target_type, target_id, model,
 				embedding_blob, dimension, source_text_hash, created_at
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(entity_type, entity_id, model) DO UPDATE SET
+			ON CONFLICT(target_type, target_id, model) DO UPDATE SET
 				embedding_blob = excluded.embedding_blob,
 				dimension = excluded.dimension,
 				source_text_hash = excluded.source_text_hash

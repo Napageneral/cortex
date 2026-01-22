@@ -124,7 +124,7 @@ func insertEmbedding(db *sql.DB, docKey, model string, embedding []float64, sour
 	embID := uuid.New().String()
 	now := time.Now().Unix()
 	_, err := db.Exec(`
-		INSERT INTO embeddings (id, entity_type, entity_id, model, embedding_blob, dimension, source_text_hash, created_at)
+		INSERT INTO embeddings (id, target_type, target_id, model, embedding_blob, dimension, source_text_hash, created_at)
 		VALUES (?, 'document', ?, ?, ?, ?, ?, ?)
 	`, embID, docKey, model, blob, len(embedding), sourceHash, now)
 	return err
