@@ -1,0 +1,31 @@
+# Cortex Memory System — Progress Log
+
+## Codebase Patterns
+
+*(Add reusable patterns here as you discover them)*
+
+### Project Structure
+- `cmd/cortex/` — CLI entry point
+- `internal/db/` — Database layer, schema.sql
+- `internal/` — Core packages
+- `prompts/graphiti/` — LLM prompts for extraction
+
+### Schema Conventions
+- Tables use snake_case
+- Primary keys are TEXT (UUIDs)
+- Timestamps are INTEGER (Unix epoch) or TEXT (ISO 8601)
+- JSON fields end with `_json` suffix
+- Foreign keys have ON DELETE CASCADE where appropriate
+
+### Go Conventions
+- Packages are lowercase, single word when possible
+- Structs match table names in PascalCase
+- Use context.Context for cancellation
+- Errors are returned, not panicked
+
+---
+
+## Progress Log
+
+*(Append entries below as stories are completed)*
+

@@ -1,0 +1,30 @@
+{
+  "id": "fixture-imessage-identity-001",
+  "source": "imessage",
+  "channel": "imessage",
+  "thread_id": "chat_casey_tyler",
+  "reference_time": "2026-01-22T10:30:00Z",
+  "events": [
+    {
+      "id": "evt-001",
+      "timestamp": "2026-01-22T10:28:00Z",
+      "sender": "Tyler",
+      "sender_identifier": "+1-707-287-6731",
+      "content": "hey what's your work email again?",
+      "direction": "outbound"
+    },
+    {
+      "id": "evt-002",
+      "timestamp": "2026-01-22T10:30:00Z",
+      "sender": "Casey Adams",
+      "sender_identifier": "+1-555-123-4567",
+      "content": "my new work email is casey.adams@company.com",
+      "direction": "inbound"
+    }
+  ],
+  "metadata": {
+    "description": "Casey self-discloses their work email in response to Tyler's question",
+    "coverage_tags": ["identity_disclosure", "email", "self_disclosed", "imessage"],
+    "notes": "Tests: entity extraction (2 people), identity promotion (email → alias), source_type detection"
+  }
+}

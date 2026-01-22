@@ -1,0 +1,30 @@
+{
+  "id": "fixture-imessage-jobchange-001",
+  "source": "imessage",
+  "channel": "imessage",
+  "thread_id": "chat_casey_tyler",
+  "reference_time": "2026-01-15T14:00:00Z",
+  "events": [
+    {
+      "id": "evt-001",
+      "timestamp": "2026-01-15T14:00:00Z",
+      "sender": "Tyler",
+      "sender_identifier": "+1-707-287-6731",
+      "content": "Big news - I left Intent Systems last month and started at Anthropic!",
+      "direction": "outbound"
+    },
+    {
+      "id": "evt-002",
+      "timestamp": "2026-01-15T14:02:00Z",
+      "sender": "Casey Adams",
+      "sender_identifier": "+1-555-123-4567",
+      "content": "Congrats! That's huge!",
+      "direction": "inbound"
+    }
+  ],
+  "metadata": {
+    "description": "Tyler announces job change - left Intent Systems, started at Anthropic",
+    "coverage_tags": ["job_change", "temporal", "invalid_at", "valid_at", "company", "self_disclosed"],
+    "notes": "Tests: Company entity extraction, bi-temporal (invalid_at on old job, valid_at on new), WORKS_AT relationships"
+  }
+}

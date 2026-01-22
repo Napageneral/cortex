@@ -1,0 +1,54 @@
+# Fixture: Tyler announces job change
+description: "Tyler left Intent Systems last month, started at Anthropic"
+
+entities:
+  must_have:
+    - name_contains: "Tyler"
+      entity_type: Person
+      
+    - name_contains: "Casey"
+      entity_type: Person
+      
+    - name_contains: "Intent Systems"
+      entity_type: Company
+      
+    - name_contains: "Anthropic"
+      entity_type: Company
+
+relationships:
+  must_have:
+    # Old job with invalid_at (ended last month = 2025-12)
+    - source_entity_name_contains: "Tyler"
+      relation_type: WORKS_AT
+      target_entity_name_contains: "Intent Systems"
+      invalid_at_like: "2025-12%"  # Approximately December 2025
+      
+    # New job with valid_at (started this month = 2026-01)
+    - source_entity_name_contains: "Tyler"
+      relation_type: WORKS_AT
+      target_entity_name_contains: "Anthropic"
+      valid_at_like: "2026-01%"  # Approximately January 2026
+      invalid_at: null  # Still current
+
+  must_not_have:
+    # Should not create relationships without temporal context
+    - source_entity_name_contains: "Tyler"
+      relation_type: WORKS_AT
+      valid_at: null
+      invalid_at: null
+
+episode_relationship_mentions:
+  must_have:
+    # Both relationships should have provenance
+    - extracted_fact_contains: "Intent Systems"
+      source_type: self_disclosed
+      
+    - extracted_fact_contains: "Anthropic"
+      source_type: self_disclosed
+
+episode_entity_mentions:
+  must_have:
+    - entity_name_contains: "Tyler"
+    - entity_name_contains: "Casey"
+    - entity_name_contains: "Intent Systems"
+    - entity_name_contains: "Anthropic"
