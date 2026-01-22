@@ -63,8 +63,8 @@
         "go build succeeds"
       ],
       "priority": 4,
-      "passes": false,
-      "notes": "See MEMORY_SYSTEM_SPEC.md §3.4. target_literal for identity/temporal relationships."
+      "passes": true,
+      "notes": "See MEMORY_SYSTEM_SPEC.md §3.4. target_literal for identity/temporal relationships. Completed: Added relationships table with all columns, CHECK constraint, conditional UNIQUE indexes, and regular indexes per spec."
     },
     {
       "id": "MS-005",
@@ -77,8 +77,8 @@
         "go build succeeds"
       ],
       "priority": 5,
-      "passes": false,
-      "notes": "See MEMORY_SYSTEM_SPEC.md §3.4. Junction table for episode↔entity."
+      "passes": true,
+      "notes": "See MEMORY_SYSTEM_SPEC.md §3.4. Junction table for episode↔entity. Completed: Added episode_entity_mentions table with composite PK, ON DELETE CASCADE for both FKs, and entity_id index per spec."
     },
     {
       "id": "MS-006",

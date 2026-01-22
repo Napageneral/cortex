@@ -97,3 +97,41 @@
 - Identity relationships (HAS_EMAIL, HAS_PHONE, HAS_HANDLE) get promoted to aliases table, not stored in relationships table
 - normalized column enables case-insensitive matching without runtime LOWER() calls
 
+---
+## 2026-01-21 - [MS-004] Add relationships table to schema
+- Added `relationships` table to schema.sql following spec §3.4
+- Columns: id, source_entity_id (FK to entities), target_entity_id (FK nullable), target_literal, relation_type, fact, valid_at, invalid_at, created_at, confidence
+- CHECK constraint ensures exactly one of target_entity_id or target_literal is NOT NULL
+- Conditional UNIQUE indexes:
+  - `idx_relationships_unique_entity` on (source_entity_id, target_entity_id, relation_type, valid_at) WHERE target_entity_id IS NOT NULL
+  - `idx_relationships_unique_literal` on (source_entity_id, target_literal, relation_type, valid_at) WHERE target_literal IS NOT NULL
+- Regular indexes: source, target, type, temporal bounds
+- Schema version incremented from 15 to 16
+
+**Files changed:**
+- `internal/db/schema.sql` - Added relationships table and indexes
+
+**Learnings:**
+- SQLite supports conditional UNIQUE indexes via `WHERE` clause - useful for enforcing different uniqueness constraints based on which column is populated
+- CHECK constraint syntax in SQLite is straightforward for XOR-style validation
+- Bi-temporal model uses TEXT for timestamps (ISO 8601) to match entity/alias tables
+- valid_at allows NULL (unknown when relationship started) but enables different relationships with same (source, target, type) if they have different valid_at values (e.g., multiple job stints at same company)
+
+---
+## 2026-01-21 - [MS-005] Add episode_entity_mentions table to schema
+- Added `episode_entity_mentions` junction table to schema.sql following spec §3.4
+- Columns: episode_id (FK to episodes), entity_id (FK to entities), mention_count (default 1), created_at
+- Composite PRIMARY KEY on (episode_id, entity_id) - ensures one record per episode-entity pair
+- Added ON DELETE CASCADE for both foreign keys to maintain referential integrity
+- Index: idx_episode_entity_mentions_entity (entity_id) for efficient entity-based lookups
+- Schema version incremented from 16 to 17
+
+**Files changed:**
+- `internal/db/schema.sql` - Added episode_entity_mentions table and index
+
+**Learnings:**
+- Junction tables with composite PKs don't need separate id columns - the composite PK serves as the unique identifier
+- ON DELETE CASCADE is important for junction tables referencing entities that may be merged/deleted
+- The mention_count column enables tracking how many times an entity is referenced within an episode (useful for relevance scoring)
+- Table positioned after relationships and before upcoming episode_relationship_mentions to maintain logical grouping
+

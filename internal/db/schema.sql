@@ -623,9 +623,25 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_relationships_unique_literal
 ON relationships(source_entity_id, target_literal, relation_type, valid_at)
 WHERE target_literal IS NOT NULL;
 
+-- ============================================
+-- EPISODE-ENTITY MENTIONS (which episodes mention which entities)
+-- ============================================
+-- Junction table: many-to-many between episodes and entities.
+-- Used for: entity summary generation, recency queries, channel derivation.
+-- "Which channels does Tyler appear in?" = query episodes via this table.
+CREATE TABLE IF NOT EXISTS episode_entity_mentions (
+    episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+    entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    mention_count INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (episode_id, entity_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_episode_entity_mentions_entity ON episode_entity_mentions(entity_id);
+
 -- Insert initial schema version
 INSERT OR IGNORE INTO schema_version (version, applied_at)
-VALUES (16, strftime('%s', 'now'));
+VALUES (17, strftime('%s', 'now'));
 
 -- NOTE: pii_extraction_v1 analysis type is now registered via `cortex compute seed` command
 -- This matches the pattern used for convo-all-v1 and is more maintainable
