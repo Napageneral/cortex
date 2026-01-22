@@ -46,7 +46,7 @@ type aixTokenCountFull struct {
 type ExtractResult struct {
 	EventsProcessed int
 	FacetsCreated   int
-	SegmentsCreated int
+	EpisodesCreated int
 	Duration        time.Duration
 }
 
@@ -61,10 +61,10 @@ func (e *AIXFacetExtractor) ExtractFacetsFromMetadata(ctx context.Context, chann
 		return result, fmt.Errorf("ensure analysis type: %w", err)
 	}
 
-	// Get or create segment definition for single-event AIX segments
-	segmentDefID, err := e.ensureSegmentDefinition(ctx)
+	// Get or create episode definition for single-event AIX episodes
+	episodeDefID, err := e.ensureEpisodeDefinition(ctx)
 	if err != nil {
-		return result, fmt.Errorf("ensure segment definition: %w", err)
+		return result, fmt.Errorf("ensure episode definition: %w", err)
 	}
 
 	// Query events with metadata that haven't been processed yet
@@ -75,15 +75,15 @@ func (e *AIXFacetExtractor) ExtractFacetsFromMetadata(ctx context.Context, chann
 		  AND e.channel = ?
 		  AND e.timestamp > ?
 		  AND NOT EXISTS (
-		    SELECT 1 FROM segment_events se
-		    JOIN segments s ON s.id = se.segment_id
-		    WHERE se.event_id = e.id AND s.definition_id = ?
+		    SELECT 1 FROM episode_events ee
+		    JOIN episodes ep ON ep.id = ee.episode_id
+		    WHERE ee.event_id = e.id AND ep.definition_id = ?
 		  )
 		ORDER BY e.timestamp ASC
 		LIMIT 500
 	`
 
-	rows, err := e.db.QueryContext(ctx, query, channel, since, segmentDefID)
+	rows, err := e.db.QueryContext(ctx, query, channel, since, episodeDefID)
 	if err != nil {
 		return result, fmt.Errorf("query events: %w", err)
 	}
@@ -128,25 +128,25 @@ func (e *AIXFacetExtractor) ExtractFacetsFromMetadata(ctx context.Context, chann
 
 	now := time.Now().Unix()
 
-	stmtSegment, err := tx.PrepareContext(ctx, `
-		INSERT INTO segments (id, definition_id, channel, thread_id, start_time, end_time, event_count, first_event_id, last_event_id, created_at)
+	stmtEpisode, err := tx.PrepareContext(ctx, `
+		INSERT INTO episodes (id, definition_id, channel, thread_id, start_time, end_time, event_count, first_event_id, last_event_id, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
 	`)
 	if err != nil {
-		return result, fmt.Errorf("prepare segment stmt: %w", err)
+		return result, fmt.Errorf("prepare episode stmt: %w", err)
 	}
-	defer stmtSegment.Close()
+	defer stmtEpisode.Close()
 
-	stmtSegmentEvent, err := tx.PrepareContext(ctx, `
-		INSERT INTO segment_events (segment_id, event_id, position) VALUES (?, ?, 1)
+	stmtEpisodeEvent, err := tx.PrepareContext(ctx, `
+		INSERT INTO episode_events (episode_id, event_id, position) VALUES (?, ?, 1)
 	`)
 	if err != nil {
-		return result, fmt.Errorf("prepare segment_event stmt: %w", err)
+		return result, fmt.Errorf("prepare episode_event stmt: %w", err)
 	}
-	defer stmtSegmentEvent.Close()
+	defer stmtEpisodeEvent.Close()
 
 	stmtRun, err := tx.PrepareContext(ctx, `
-		INSERT INTO analysis_runs (id, analysis_type_id, segment_id, status, started_at, completed_at, output_text, created_at)
+		INSERT INTO analysis_runs (id, analysis_type_id, episode_id, status, started_at, completed_at, output_text, created_at)
 		VALUES (?, ?, ?, 'completed', ?, ?, ?, ?)
 	`)
 	if err != nil {
@@ -155,7 +155,7 @@ func (e *AIXFacetExtractor) ExtractFacetsFromMetadata(ctx context.Context, chann
 	defer stmtRun.Close()
 
 	stmtFacet, err := tx.PrepareContext(ctx, `
-		INSERT INTO facets (id, analysis_run_id, segment_id, facet_type, value, confidence, metadata_json, created_at)
+		INSERT INTO facets (id, analysis_run_id, episode_id, facet_type, value, confidence, metadata_json, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
@@ -164,32 +164,32 @@ func (e *AIXFacetExtractor) ExtractFacetsFromMetadata(ctx context.Context, chann
 	defer stmtFacet.Close()
 
 	for _, ed := range events {
-		segmentID := uuid.New().String()
+		episodeID := uuid.New().String()
 		var threadIDVal interface{}
 		if ed.threadID.Valid {
 			threadIDVal = ed.threadID.String
 		}
 
-		_, err = stmtSegment.ExecContext(ctx, segmentID, segmentDefID, ed.eventChannel, threadIDVal, ed.timestamp, ed.timestamp, ed.eventID, ed.eventID, now)
+		_, err = stmtEpisode.ExecContext(ctx, episodeID, episodeDefID, ed.eventChannel, threadIDVal, ed.timestamp, ed.timestamp, ed.eventID, ed.eventID, now)
 		if err != nil {
 			continue
 		}
 
-		_, err = stmtSegmentEvent.ExecContext(ctx, segmentID, ed.eventID)
+		_, err = stmtEpisodeEvent.ExecContext(ctx, episodeID, ed.eventID)
 		if err != nil {
 			continue
 		}
-		result.SegmentsCreated++
+		result.EpisodesCreated++
 
 		runID := uuid.New().String()
-		_, err = stmtRun.ExecContext(ctx, runID, analysisTypeID, segmentID, now, now, ed.metadataJSON, now)
+		_, err = stmtRun.ExecContext(ctx, runID, analysisTypeID, episodeID, now, now, ed.metadataJSON, now)
 		if err != nil {
 			continue
 		}
 
-		facets := extractFacetsFromMeta(ed.meta, runID, segmentID, now)
+		facets := extractFacetsFromMeta(ed.meta, runID, episodeID, now)
 		for _, f := range facets {
-			_, err = stmtFacet.ExecContext(ctx, f.ID, f.AnalysisRunID, f.SegmentID, f.FacetType, f.Value, f.Confidence, f.MetadataJSON, f.CreatedAt)
+			_, err = stmtFacet.ExecContext(ctx, f.ID, f.AnalysisRunID, f.EpisodeID, f.FacetType, f.Value, f.Confidence, f.MetadataJSON, f.CreatedAt)
 			if err == nil {
 				result.FacetsCreated++
 			}
@@ -209,7 +209,7 @@ func (e *AIXFacetExtractor) ExtractFacetsFromMetadata(ctx context.Context, chann
 type facetRow struct {
 	ID            string
 	AnalysisRunID string
-	SegmentID     string
+	EpisodeID     string
 	FacetType     string
 	Value         string
 	Confidence    float64
@@ -236,7 +236,7 @@ func hasExtractableFacets(meta aixMetadataFull) bool {
 	return false
 }
 
-func extractFacetsFromMeta(meta aixMetadataFull, runID, segmentID string, now int64) []facetRow {
+func extractFacetsFromMeta(meta aixMetadataFull, runID, episodeID string, now int64) []facetRow {
 	var facets []facetRow
 
 	// Extract file references
@@ -247,7 +247,7 @@ func extractFacetsFromMeta(meta aixMetadataFull, runID, segmentID string, now in
 		facets = append(facets, facetRow{
 			ID:            uuid.New().String(),
 			AnalysisRunID: runID,
-			SegmentID:     segmentID,
+			EpisodeID:     episodeID,
 			FacetType:     "file_reference",
 			Value:         file,
 			Confidence:    1.0,
@@ -264,7 +264,7 @@ func extractFacetsFromMeta(meta aixMetadataFull, runID, segmentID string, now in
 		facets = append(facets, facetRow{
 			ID:            uuid.New().String(),
 			AnalysisRunID: runID,
-			SegmentID:     segmentID,
+			EpisodeID:     episodeID,
 			FacetType:     "tool_invocation",
 			Value:         meta.ToolFormerData.Name,
 			Confidence:    1.0,
@@ -278,7 +278,7 @@ func extractFacetsFromMeta(meta aixMetadataFull, runID, segmentID string, now in
 		facets = append(facets, facetRow{
 			ID:            uuid.New().String(),
 			AnalysisRunID: runID,
-			SegmentID:     segmentID,
+			EpisodeID:     episodeID,
 			FacetType:     "mode",
 			Value:         "agentic",
 			Confidence:    1.0,
@@ -299,7 +299,7 @@ func extractFacetsFromMeta(meta aixMetadataFull, runID, segmentID string, now in
 		facets = append(facets, facetRow{
 			ID:            uuid.New().String(),
 			AnalysisRunID: runID,
-			SegmentID:     segmentID,
+			EpisodeID:     episodeID,
 			FacetType:     "capability",
 			Value:         capType,
 			Confidence:    1.0,
@@ -356,7 +356,7 @@ func (e *AIXFacetExtractor) ensureAnalysisType(ctx context.Context) (string, err
 	return id, nil
 }
 
-func (e *AIXFacetExtractor) ensureSegmentDefinition(ctx context.Context) (string, error) {
+func (e *AIXFacetExtractor) ensureEpisodeDefinition(ctx context.Context) (string, error) {
 	config := chunk.SingleEventConfig{}
 	return chunk.CreateDefinition(
 		ctx,
@@ -365,6 +365,6 @@ func (e *AIXFacetExtractor) ensureSegmentDefinition(ctx context.Context) (string
 		"",
 		"single_event",
 		config,
-		"Single-event segments (one event per event)",
+		"Single-event episodes (one episode per event)",
 	)
 }

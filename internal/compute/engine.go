@@ -47,10 +47,10 @@ type Engine struct {
 	// Embedding batcher for high-throughput batch API calls
 	embeddingBatcher *EmbeddingsBatcher
 
-	// Pre-encoded segment cache for high-throughput bulk processing
-	// Maps segment_id -> encoded text
-	segmentTextCache   map[string]string
-	segmentTextCacheMu sync.RWMutex
+	// Pre-encoded episode cache for high-throughput bulk processing
+	// Maps episode_id -> encoded text
+	episodeTextCache   map[string]string
+	episodeTextCacheMu sync.RWMutex
 }
 
 // Config for the compute engine
@@ -273,28 +273,28 @@ func (e *Engine) EffectiveRPM() (analysisRPM, embedRPM int) {
 	return
 }
 
-// PreloadSegments pre-encodes all segment texts into memory cache.
+// PreloadEpisodes pre-encodes all episode texts into memory cache.
 // This eliminates per-job DB reads during bulk processing, matching ChatStats'
 // pre-encoding strategy for maximum throughput.
 // Call this before Run() for best results with large batches.
-func (e *Engine) PreloadSegments(ctx context.Context) (int, error) {
-	log.Printf("[preload] Starting segment pre-encoding...")
+func (e *Engine) PreloadEpisodes(ctx context.Context) (int, error) {
+	log.Printf("[preload] Starting episode pre-encoding...")
 	start := time.Now()
 
-	// Get all segment IDs
-	rows, err := e.db.QueryContext(ctx, `SELECT id FROM segments`)
+	// Get all episode IDs
+	rows, err := e.db.QueryContext(ctx, `SELECT id FROM episodes`)
 	if err != nil {
-		return 0, fmt.Errorf("query segments: %w", err)
+		return 0, fmt.Errorf("query episodes: %w", err)
 	}
 
-	var segmentIDs []string
+	var episodeIDs []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			rows.Close()
 			return 0, err
 		}
-		segmentIDs = append(segmentIDs, id)
+		episodeIDs = append(episodeIDs, id)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -302,48 +302,60 @@ func (e *Engine) PreloadSegments(ctx context.Context) (int, error) {
 	}
 	rows.Close()
 
-	if len(segmentIDs) == 0 {
+	if len(episodeIDs) == 0 {
 		return 0, nil
 	}
 
-	// Pre-encode all segments
-	cache := make(map[string]string, len(segmentIDs))
-	for _, segmentID := range segmentIDs {
-		text, err := e.buildSegmentText(ctx, segmentID)
+	// Pre-encode all episodes
+	cache := make(map[string]string, len(episodeIDs))
+	for _, episodeID := range episodeIDs {
+		text, err := e.buildEpisodeText(ctx, episodeID)
 		if err != nil {
-			log.Printf("[preload] Warning: failed to encode segment %s: %v", segmentID, err)
+			log.Printf("[preload] Warning: failed to encode episode %s: %v", episodeID, err)
 			continue
 		}
-		cache[segmentID] = text
+		cache[episodeID] = text
 	}
 
 	// Swap in the cache atomically
-	e.segmentTextCacheMu.Lock()
-	e.segmentTextCache = cache
-	e.segmentTextCacheMu.Unlock()
+	e.episodeTextCacheMu.Lock()
+	e.episodeTextCache = cache
+	e.episodeTextCacheMu.Unlock()
 
 	elapsed := time.Since(start)
-	log.Printf("[preload] Pre-encoded %d segments in %v (%.1f/sec)",
+	log.Printf("[preload] Pre-encoded %d episodes in %v (%.1f/sec)",
 		len(cache), elapsed, float64(len(cache))/elapsed.Seconds())
 
 	return len(cache), nil
 }
 
-// ClearSegmentCache clears the pre-encoded segment cache
-func (e *Engine) ClearSegmentCache() {
-	e.segmentTextCacheMu.Lock()
-	e.segmentTextCache = nil
-	e.segmentTextCacheMu.Unlock()
+// PreloadSegments is a backward-compatible alias for PreloadEpisodes.
+// Deprecated: Use PreloadEpisodes instead.
+func (e *Engine) PreloadSegments(ctx context.Context) (int, error) {
+	return e.PreloadEpisodes(ctx)
 }
 
-// getSegmentTextCached returns cached segment text if available
-func (e *Engine) getSegmentTextCached(segmentID string) (string, bool) {
-	e.segmentTextCacheMu.RLock()
-	defer e.segmentTextCacheMu.RUnlock()
-	if e.segmentTextCache == nil {
+// ClearEpisodeCache clears the pre-encoded episode cache
+func (e *Engine) ClearEpisodeCache() {
+	e.episodeTextCacheMu.Lock()
+	e.episodeTextCache = nil
+	e.episodeTextCacheMu.Unlock()
+}
+
+// ClearSegmentCache is a backward-compatible alias for ClearEpisodeCache.
+// Deprecated: Use ClearEpisodeCache instead.
+func (e *Engine) ClearSegmentCache() {
+	e.ClearEpisodeCache()
+}
+
+// getEpisodeTextCached returns cached episode text if available
+func (e *Engine) getEpisodeTextCached(episodeID string) (string, bool) {
+	e.episodeTextCacheMu.RLock()
+	defer e.episodeTextCacheMu.RUnlock()
+	if e.episodeTextCache == nil {
 		return "", false
 	}
-	text, ok := e.segmentTextCache[segmentID]
+	text, ok := e.episodeTextCache[episodeID]
 	return text, ok
 }
 
@@ -352,8 +364,8 @@ func (e *Engine) QueueStats() (*queue.Stats, error) {
 	return e.queue.GetStats()
 }
 
-// EnqueueAnalysis queues analysis jobs for all un-analyzed segments
-func (e *Engine) EnqueueAnalysis(ctx context.Context, analysisTypeName string, segmentIDs ...string) (int, error) {
+// EnqueueAnalysis queues analysis jobs for all un-analyzed episodes
+func (e *Engine) EnqueueAnalysis(ctx context.Context, analysisTypeName string, episodeIDs ...string) (int, error) {
 	// Get the analysis type
 	var analysisTypeID string
 	err := e.db.QueryRowContext(ctx, `
@@ -363,33 +375,33 @@ func (e *Engine) EnqueueAnalysis(ctx context.Context, analysisTypeName string, s
 		return 0, fmt.Errorf("analysis type not found: %w", err)
 	}
 
-	var segIDs []string
+	var epIDs []string
 
-	// If specific segment IDs provided, use those (already filtered by caller)
-	if len(segmentIDs) > 0 {
-		segIDs = segmentIDs
+	// If specific episode IDs provided, use those (already filtered by caller)
+	if len(episodeIDs) > 0 {
+		epIDs = episodeIDs
 	} else {
-		// Find segments without analysis runs for this type
+		// Find episodes without analysis runs for this type
 		// Collect all IDs first, then close rows before enqueueing (SQLite deadlock avoidance)
 		rows, err := e.db.QueryContext(ctx, `
-			SELECT s.id FROM segments s
+			SELECT ep.id FROM episodes ep
 			WHERE NOT EXISTS (
 				SELECT 1 FROM analysis_runs ar
-				WHERE ar.segment_id = s.id
+				WHERE ar.episode_id = ep.id
 				AND ar.analysis_type_id = ?
 			)
 		`, analysisTypeID)
 		if err != nil {
-			return 0, fmt.Errorf("query segments: %w", err)
+			return 0, fmt.Errorf("query episodes: %w", err)
 		}
 
 		for rows.Next() {
-			var segID string
-			if err := rows.Scan(&segID); err != nil {
+			var epID string
+			if err := rows.Scan(&epID); err != nil {
 				rows.Close()
 				return 0, err
 			}
-			segIDs = append(segIDs, segID)
+			epIDs = append(epIDs, epID)
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
@@ -400,18 +412,18 @@ func (e *Engine) EnqueueAnalysis(ctx context.Context, analysisTypeName string, s
 
 	// Now enqueue (rows is closed, no deadlock)
 	count := 0
-	for _, segID := range segIDs {
+	for _, epID := range epIDs {
 		payload := AnalysisJobPayload{
-			SegmentID:      segID,
+			EpisodeID:      epID,
 			AnalysisTypeID: analysisTypeID,
 		}
 
 		if err := e.queue.Enqueue(queue.EnqueueOptions{
 			Type:    JobTypeAnalysis,
-			Key:     fmt.Sprintf("analysis:%s:%s", analysisTypeID, segID),
+			Key:     fmt.Sprintf("analysis:%s:%s", analysisTypeID, epID),
 			Payload: payload,
 		}); err != nil {
-			log.Printf("failed to enqueue analysis for %s: %v", segID, err)
+			log.Printf("failed to enqueue analysis for %s: %v", epID, err)
 			continue
 		}
 		count++
@@ -420,30 +432,30 @@ func (e *Engine) EnqueueAnalysis(ctx context.Context, analysisTypeName string, s
 	return count, nil
 }
 
-// EnqueueEmbeddings queues embedding jobs for all un-embedded segments
+// EnqueueEmbeddings queues embedding jobs for all un-embedded episodes
 func (e *Engine) EnqueueEmbeddings(ctx context.Context) (int, error) {
-	// Find segments without embeddings
+	// Find episodes without embeddings
 	// Collect IDs first, close rows, then enqueue (SQLite deadlock avoidance)
 	rows, err := e.db.QueryContext(ctx, `
-		SELECT s.id FROM segments s
+		SELECT ep.id FROM episodes ep
 		WHERE NOT EXISTS (
 			SELECT 1 FROM embeddings em
-			WHERE em.entity_type = 'segment'
-			AND em.entity_id = s.id
+			WHERE em.entity_type = 'episode'
+			AND em.entity_id = ep.id
 		)
 	`)
 	if err != nil {
-		return 0, fmt.Errorf("query segments: %w", err)
+		return 0, fmt.Errorf("query episodes: %w", err)
 	}
 
-	var segIDs []string
+	var epIDs []string
 	for rows.Next() {
-		var segID string
-		if err := rows.Scan(&segID); err != nil {
+		var epID string
+		if err := rows.Scan(&epID); err != nil {
 			rows.Close()
 			return 0, err
 		}
-		segIDs = append(segIDs, segID)
+		epIDs = append(epIDs, epID)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -453,18 +465,18 @@ func (e *Engine) EnqueueEmbeddings(ctx context.Context) (int, error) {
 
 	// Now enqueue (rows is closed, no deadlock)
 	count := 0
-	for _, segID := range segIDs {
+	for _, epID := range epIDs {
 		payload := EmbeddingJobPayload{
-			EntityType: "segment",
-			EntityID:   segID,
+			EntityType: "episode",
+			EntityID:   epID,
 		}
 
 		if err := e.queue.Enqueue(queue.EnqueueOptions{
 			Type:    JobTypeEmbedding,
-			Key:     fmt.Sprintf("embedding:segment:%s", segID),
+			Key:     fmt.Sprintf("embedding:episode:%s", epID),
 			Payload: payload,
 		}); err != nil {
-			log.Printf("failed to enqueue embedding for %s: %v", segID, err)
+			log.Printf("failed to enqueue embedding for %s: %v", epID, err)
 			continue
 		}
 		count++
@@ -632,7 +644,7 @@ func (e *Engine) EnqueueDocumentEmbeddings(ctx context.Context) (int, error) {
 
 // AnalysisJobPayload for analysis jobs
 type AnalysisJobPayload struct {
-	SegmentID      string `json:"segment_id"`
+	EpisodeID      string `json:"segment_id"` // JSON key kept as segment_id for backward compat with queued jobs
 	AnalysisTypeID string `json:"analysis_type_id"`
 }
 
@@ -685,43 +697,44 @@ func (e *Engine) handleAnalysisJob(ctx context.Context, job *queue.Job) error {
 	}
 	dbReadDur = time.Since(t0)
 
-	// Build segment text (check cache first for pre-encoded text)
+	// Build episode text (check cache first for pre-encoded text)
+	episodeID := payload.EpisodeID
 	t1 := time.Now()
-	var segText string
+	var epText string
 	if analysisTypeName == "pii_extraction" {
 		var err error
-		segText, err = e.buildSegmentTextMasked(ctx, payload.SegmentID)
+		epText, err = e.buildEpisodeTextMasked(ctx, episodeID)
 		if err != nil {
-			return fmt.Errorf("build segment text (masked): %w", err)
+			return fmt.Errorf("build episode text (masked): %w", err)
 		}
 	} else if analysisTypeName == "turn_quality_v1" {
 		var err error
-		segText, err = e.buildTurnQualityText(ctx, payload.SegmentID)
+		epText, err = e.buildTurnQualityText(ctx, episodeID)
 		if err != nil {
-			return fmt.Errorf("build segment text (turn quality): %w", err)
+			return fmt.Errorf("build episode text (turn quality): %w", err)
 		}
 	} else {
-		if cached, ok := e.getSegmentTextCached(payload.SegmentID); ok {
-			segText = cached
+		if cached, ok := e.getEpisodeTextCached(episodeID); ok {
+			epText = cached
 		} else {
 			var err error
-			segText, err = e.buildSegmentText(ctx, payload.SegmentID)
+			epText, err = e.buildEpisodeText(ctx, episodeID)
 			if err != nil {
-				return fmt.Errorf("build segment text: %w", err)
+				return fmt.Errorf("build episode text: %w", err)
 			}
 		}
 	}
 	textBuildDur = time.Since(t1)
 
-	// Build prompt
-	prompt := strings.ReplaceAll(promptTemplate, "{{{segment_text}}}", segText)
+	// Build prompt (template uses {{{segment_text}}} for backward compatibility)
+	prompt := strings.ReplaceAll(promptTemplate, "{{{segment_text}}}", epText)
 
 	// Check if analysis already exists (idempotency)
 	var existingRunID, existingStatus string
 	err = e.db.QueryRowContext(ctx, `
-		SELECT id, status FROM analysis_runs 
-		WHERE analysis_type_id = ? AND segment_id = ?
-	`, payload.AnalysisTypeID, payload.SegmentID).Scan(&existingRunID, &existingStatus)
+		SELECT id, status FROM analysis_runs
+		WHERE analysis_type_id = ? AND episode_id = ?
+	`, payload.AnalysisTypeID, episodeID).Scan(&existingRunID, &existingStatus)
 
 	var runID string
 	now := time.Now().Unix()
@@ -746,9 +759,9 @@ func (e *Engine) handleAnalysisJob(ctx context.Context, job *queue.Job) error {
 		// Create new record
 		runID = uuid.New().String()
 		_, err = e.db.ExecContext(ctx, `
-			INSERT INTO analysis_runs (id, analysis_type_id, segment_id, status, started_at, created_at)
+			INSERT INTO analysis_runs (id, analysis_type_id, episode_id, status, started_at, created_at)
 			VALUES (?, ?, ?, 'running', ?, ?)
-		`, runID, payload.AnalysisTypeID, payload.SegmentID, now, now)
+		`, runID, payload.AnalysisTypeID, episodeID, now, now)
 		if err != nil {
 			return fmt.Errorf("create analysis run: %w", err)
 		}
@@ -761,9 +774,9 @@ func (e *Engine) handleAnalysisJob(ctx context.Context, job *queue.Job) error {
 		var err error
 		switch analysisTypeName {
 		case "nexus_cli_invocations":
-			outputText, err = e.buildNexusCLIOutput(ctx, payload.SegmentID)
+			outputText, err = e.buildNexusCLIOutput(ctx, episodeID)
 		case "terminal_invocations":
-			outputText, err = e.buildTerminalInvocationOutput(ctx, payload.SegmentID)
+			outputText, err = e.buildTerminalInvocationOutput(ctx, episodeID)
 		default:
 			err = fmt.Errorf("unsupported local analysis type: %s", analysisTypeName)
 		}
@@ -778,7 +791,7 @@ func (e *Engine) handleAnalysisJob(ctx context.Context, job *queue.Job) error {
 
 		tWrite := time.Now()
 		if facetsConfigJSON.Valid {
-			if err := e.extractAndPersistFacets(ctx, runID, payload.SegmentID, outputText, facetsConfigJSON.String); err != nil {
+			if err := e.extractAndPersistFacets(ctx, runID, episodeID, outputText, facetsConfigJSON.String); err != nil {
 				log.Printf("warning: facet extraction failed: %v", err)
 			}
 		}
@@ -863,7 +876,7 @@ func (e *Engine) handleAnalysisJob(ctx context.Context, job *queue.Job) error {
 	// Persist results
 	t4 := time.Now()
 	if outputType == "structured" && facetsConfigJSON.Valid {
-		if err := e.extractAndPersistFacets(ctx, runID, payload.SegmentID, outputText, facetsConfigJSON.String); err != nil {
+		if err := e.extractAndPersistFacets(ctx, runID, episodeID, outputText, facetsConfigJSON.String); err != nil {
 			log.Printf("warning: facet extraction failed: %v", err)
 		}
 	}
@@ -910,11 +923,11 @@ func (e *Engine) handleEmbeddingJob(ctx context.Context, job *queue.Job) error {
 	var text string
 	var err error
 	switch payload.EntityType {
-	case "segment":
-		if cached, ok := e.getSegmentTextCached(payload.EntityID); ok {
+	case "episode":
+		if cached, ok := e.getEpisodeTextCached(payload.EntityID); ok {
 			text = cached
 		} else {
-			text, err = e.buildSegmentText(ctx, payload.EntityID)
+			text, err = e.buildEpisodeText(ctx, payload.EntityID)
 		}
 	case "facet":
 		text, err = e.buildFacetText(ctx, payload.EntityID)
@@ -998,21 +1011,21 @@ func (e *Engine) handleEmbeddingJob(ctx context.Context, job *queue.Job) error {
 	return writeErr
 }
 
-// buildSegmentText builds text representation of a segment
+// buildEpisodeText builds text representation of an episode
 // Format matches Eve's encoding: "Name: message text [Image] [Attachment: file.pdf]"
 // Attachments are encoded as [Image], [Video], [Audio], [Sticker], or [Attachment: filename]
-func (e *Engine) buildSegmentText(ctx context.Context, segmentID string) (string, error) {
+func (e *Engine) buildEpisodeText(ctx context.Context, episodeID string) (string, error) {
 	// Query events with aggregated attachment info
 	rows, err := e.db.QueryContext(ctx, `
-		SELECT 
+		SELECT
 			e.id,
-			e.content, 
-			e.timestamp, 
-			p.canonical_name, 
+			e.content,
+			e.timestamp,
+			p.canonical_name,
 			e.direction,
 			(
 				SELECT GROUP_CONCAT(
-					CASE 
+					CASE
 						WHEN a.media_type = 'image' THEN 'image'
 						WHEN a.media_type = 'video' THEN 'video'
 						WHEN a.media_type = 'audio' THEN 'audio'
@@ -1022,13 +1035,13 @@ func (e *Engine) buildSegmentText(ctx context.Context, segmentID string) (string
 				)
 				FROM attachments a WHERE a.event_id = e.id
 			) as attachments
-		FROM segment_events se
-		JOIN events e ON se.event_id = e.id
+		FROM episode_events ee
+		JOIN events e ON ee.event_id = e.id
 		LEFT JOIN event_participants ep ON e.id = ep.event_id AND ep.role = 'sender'
 		LEFT JOIN persons p ON ep.person_id = p.id
-		WHERE se.segment_id = ?
-		ORDER BY se.position
-	`, segmentID)
+		WHERE ee.episode_id = ?
+		ORDER BY ee.position
+	`, episodeID)
 	if err != nil {
 		return "", err
 	}
@@ -1088,15 +1101,15 @@ func (e *Engine) buildSegmentText(ctx context.Context, segmentID string) (string
 }
 
 // buildTurnQualityText builds a compact turn-quality input using user messages only.
-func (e *Engine) buildTurnQualityText(ctx context.Context, segmentID string) (string, error) {
+func (e *Engine) buildTurnQualityText(ctx context.Context, episodeID string) (string, error) {
 	rows, err := e.db.QueryContext(ctx, `
 		SELECT e.content, e.direction
-		FROM segment_events se
-		JOIN events e ON se.event_id = e.id
-		WHERE se.segment_id = ?
+		FROM episode_events ee
+		JOIN events e ON ee.event_id = e.id
+		WHERE ee.episode_id = ?
 		  AND e.direction IN ('sent', 'received')
-		ORDER BY se.position
-	`, segmentID)
+		ORDER BY ee.position
+	`, episodeID)
 	if err != nil {
 		return "", err
 	}
@@ -1124,20 +1137,20 @@ func (e *Engine) buildTurnQualityText(ctx context.Context, segmentID string) (st
 	return sb.String(), nil
 }
 
-// buildSegmentTextMasked builds text for PII extraction with anonymized speaker labels.
+// buildEpisodeTextMasked builds text for PII extraction with anonymized speaker labels.
 // Speaker labels are metadata only (User/ParticipantN) to avoid name leakage.
-func (e *Engine) buildSegmentTextMasked(ctx context.Context, segmentID string) (string, error) {
+func (e *Engine) buildEpisodeTextMasked(ctx context.Context, episodeID string) (string, error) {
 	rows, err := e.db.QueryContext(ctx, `
-		SELECT 
+		SELECT
 			e.id,
-			e.content, 
-			e.timestamp, 
+			e.content,
+			e.timestamp,
 			p.id,
 			p.is_me,
 			e.direction,
 			(
 				SELECT GROUP_CONCAT(
-					CASE 
+					CASE
 						WHEN a.media_type = 'image' THEN 'image'
 						WHEN a.media_type = 'video' THEN 'video'
 						WHEN a.media_type = 'audio' THEN 'audio'
@@ -1147,13 +1160,13 @@ func (e *Engine) buildSegmentTextMasked(ctx context.Context, segmentID string) (
 				)
 				FROM attachments a WHERE a.event_id = e.id
 			) as attachments
-		FROM segment_events se
-		JOIN events e ON se.event_id = e.id
+		FROM episode_events ee
+		JOIN events e ON ee.event_id = e.id
 		LEFT JOIN event_participants ep ON e.id = ep.event_id AND ep.role = 'sender'
 		LEFT JOIN persons p ON ep.person_id = p.id
-		WHERE se.segment_id = ?
-		ORDER BY se.position
-	`, segmentID)
+		WHERE ee.episode_id = ?
+		ORDER BY ee.position
+	`, episodeID)
 	if err != nil {
 		return "", err
 	}
@@ -1328,7 +1341,7 @@ func (e *Engine) buildDocumentText(ctx context.Context, docKey string) (string, 
 }
 
 // extractAndPersistFacets parses structured output and saves facets
-func (e *Engine) extractAndPersistFacets(ctx context.Context, runID, segmentID, outputText, facetsConfig string) error {
+func (e *Engine) extractAndPersistFacets(ctx context.Context, runID, episodeID, outputText, facetsConfig string) error {
 	// Parse the JSON output (object or array)
 	jsonText := extractJSON(outputText)
 	if jsonText == "" {
@@ -1399,9 +1412,9 @@ func (e *Engine) extractAndPersistFacets(ctx context.Context, runID, segmentID, 
 	apply := func(tx *sql.Tx) error {
 		for _, f := range facets {
 			_, err := tx.Exec(`
-				INSERT INTO facets (id, analysis_run_id, segment_id, facet_type, value, created_at)
+				INSERT INTO facets (id, analysis_run_id, episode_id, facet_type, value, created_at)
 				VALUES (?, ?, ?, ?, ?, ?)
-			`, f.id, runID, segmentID, f.facetType, f.value, now)
+			`, f.id, runID, episodeID, f.facetType, f.value, now)
 			if err != nil {
 				log.Printf("insert facet error: %v", err)
 			}

@@ -23,9 +23,41 @@
 - Use context.Context for cancellation
 - Errors are returned, not panicked
 
+### Naming: Segments → Episodes
+- **Schema**: `episodes`, `episode_definitions`, `episode_events` tables
+- **Go code**: Use `Episode*` types and `episode*` variables
+- **SQL queries**: Reference `ee.episode_id` not `se.segment_id`
+- **JSON**: Can keep `segment_id` in JSON for backward compatibility with queued jobs
+- **CLI output**: Use "episodes" in user-facing messages
+
 ---
 
 ## Progress Log
 
 *(Append entries below as stories are completed)*
+
+---
+## 2026-01-21 - [MS-001] Rename segments to episodes in Go code
+- Renamed all Go code references from `segment` to `episode`
+- Updated SQL queries in engine.go, nexus_cli.go, aix_facets.go, main.go, aix.go
+- Updated struct fields: `SegmentID` → `EpisodeID`, `SegmentsCreated` → `EpisodesCreated`
+- Updated function names: `buildSegmentText` → `buildEpisodeText`, `getSegmentPreview` → `getEpisodePreview`
+- Schema was already correct (episodes, episode_events, episode_definitions)
+- JSON keys kept as `segment_id` in AnalysisJobPayload for backward compatibility with queued jobs
+
+**Files changed:**
+- `internal/compute/engine.go` - SQL queries, struct fields, function names
+- `internal/compute/nexus_cli.go` - SQL queries, function signatures
+- `internal/adapters/aix_facets.go` - SQL queries, struct fields, function names
+- `internal/live/aix.go` - Log message output field
+- `cmd/cortex/main.go` - CLI result structs, SQL queries, function names
+- `AGENTS.md` - Schema quick reference
+- `scripts/ralph-memory/progress.txt` - This entry
+
+**Learnings:**
+- The schema.sql was already migrated to use `episodes` terminology
+- Go code had many lingering references to `segment_events` table and `segment_id` columns
+- SQL column names must match schema exactly - was getting silent failures before
+- Keep JSON keys stable for backward compatibility with queued jobs
+- search/types.go already had backward compatibility aliases (SegmentSearchRequest = EpisodeSearchRequest)
 

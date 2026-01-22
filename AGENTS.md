@@ -364,13 +364,13 @@ tags            -- Soft tags on events
 person_facts    -- Rich identity graph data (PII extraction results)
 unattributed_facts  -- Ambiguous data that couldn't be attributed (resolvable later)
 merge_events    -- Identity merge proposals and execution tracking
-conversation_definitions  -- HOW to chunk events into conversations
-conversations   -- Chunked groups of events (time-gap, thread-based, etc.)
-conversation_events  -- Mapping table: which events belong to which conversations
+episode_definitions  -- HOW to chunk events into episodes
+episodes        -- Chunked groups of events (time-gap, thread-based, etc.)
+episode_events  -- Mapping table: which events belong to which episodes
 analysis_types  -- Analysis definitions (prompt, output schema, facet extraction rules)
-analysis_runs   -- Execution tracking per (analysis_type, conversation) pair
+analysis_runs   -- Execution tracking per (analysis_type, episode) pair
 facets          -- Extracted queryable values from structured analyses
-embeddings      -- Vector embeddings for entities (events, conversations, facets, persons, threads)
+embeddings      -- Vector embeddings for entities (events, episodes, facets, persons, threads)
 ```
 
 See `internal/db/schema.sql` for full DDL.

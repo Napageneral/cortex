@@ -1882,10 +1882,10 @@ queryable event store with identity resolution.`,
 						return
 					}
 					if extractResult.FacetsCreated > 0 {
-						fmt.Printf("[%s] Extracted %d facets (%d segments)\n",
+						fmt.Printf("[%s] Extracted %d facets (%d episodes)\n",
 							time.Now().Format("15:04:05"),
 							extractResult.FacetsCreated,
-							extractResult.SegmentsCreated,
+							extractResult.EpisodesCreated,
 						)
 					} else {
 						fmt.Printf("[%s] No new AIX metadata facets\n", time.Now().Format("15:04:05"))
@@ -4749,16 +4749,16 @@ Examples:
 	chunkRunCmd := &cobra.Command{
 		Use:   "run",
 		Short: "Run chunking for a definition",
-		Long:  "Apply a segment definition's chunking strategy to create segments",
+		Long:  "Apply an episode definition's chunking strategy to create episodes",
 		Args:  cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			type Result struct {
-				OK                   bool   `json:"ok"`
-				Message              string `json:"message,omitempty"`
-				DefinitionName       string `json:"definition_name,omitempty"`
-				SegmentsCreated int    `json:"segments_created,omitempty"`
-				EventsProcessed      int    `json:"events_processed,omitempty"`
-				Duration             string `json:"duration,omitempty"`
+				OK              bool   `json:"ok"`
+				Message         string `json:"message,omitempty"`
+				DefinitionName  string `json:"definition_name,omitempty"`
+				EpisodesCreated int    `json:"episodes_created,omitempty"`
+				EventsProcessed int    `json:"events_processed,omitempty"`
+				Duration        string `json:"duration,omitempty"`
 			}
 
 			database, err := db.Open()
@@ -4792,7 +4792,7 @@ Examples:
 
 			// Look up definition by name
 			var definitionID string
-			err = database.QueryRow("SELECT id FROM segment_definitions WHERE name = ?", definitionName).Scan(&definitionID)
+			err = database.QueryRow("SELECT id FROM episode_definitions WHERE name = ?", definitionName).Scan(&definitionID)
 			if err != nil {
 				result := Result{OK: false, Message: fmt.Sprintf("Definition '%s' not found", definitionName)}
 				if jsonOutput {
@@ -4828,18 +4828,18 @@ Examples:
 			}
 
 			result := Result{
-				OK:                   true,
-				DefinitionName:       definitionName,
-				SegmentsCreated: chunkResult.SegmentsCreated,
-				EventsProcessed:      chunkResult.EventsProcessed,
-				Duration:             chunkResult.Duration.String(),
+				OK:              true,
+				DefinitionName:  definitionName,
+				EpisodesCreated: chunkResult.EpisodesCreated,
+				EventsProcessed: chunkResult.EventsProcessed,
+				Duration:        chunkResult.Duration.String(),
 			}
 
 			if jsonOutput {
 				printJSON(result)
 			} else {
-				fmt.Printf("Chunked %d events into %d segments using '%s' in %s\n",
-					result.EventsProcessed, result.SegmentsCreated, result.DefinitionName, result.Duration)
+				fmt.Printf("Chunked %d events into %d episodes using '%s' in %s\n",
+					result.EventsProcessed, result.EpisodesCreated, result.DefinitionName, result.Duration)
 			}
 		},
 	}
@@ -5805,7 +5805,7 @@ Examples:
 		Args: cobra.MinimumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			type SearchResult struct {
-				SegmentID      string  `json:"segment_id"`
+				EpisodeID      string  `json:"episode_id"`
 				Channel        string  `json:"channel,omitempty"`
 				ThreadID       string  `json:"thread_id,omitempty"`
 				ThreadName     string  `json:"thread_name,omitempty"`
@@ -5887,7 +5887,7 @@ Examples:
 			results := make([]SearchResult, 0, len(resp.Results))
 			for _, r := range resp.Results {
 				results = append(results, SearchResult{
-					SegmentID:  r.SegmentID,
+					EpisodeID:  r.EpisodeID,
 					Channel:    r.Channel,
 					ThreadID:   r.ThreadID,
 					ThreadName: r.ThreadName,
@@ -5900,7 +5900,7 @@ Examples:
 
 			// Get preview for top results
 			for i := range results {
-				preview, _ := getSegmentPreview(ctx, database, results[i].SegmentID, 200)
+				preview, _ := getEpisodePreview(ctx, database, results[i].EpisodeID, 200)
 				results[i].Preview = preview
 			}
 
@@ -5965,7 +5965,7 @@ Examples:
 		Args: cobra.MinimumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			type RouteCandidate struct {
-				SegmentID      string  `json:"segment_id"`
+				EpisodeID      string  `json:"episode_id"`
 				DefinitionName string  `json:"definition_name,omitempty"`
 				Channel        string  `json:"channel,omitempty"`
 				ThreadID       string  `json:"thread_id,omitempty"`
@@ -6049,7 +6049,7 @@ Examples:
 			candidates := make([]RouteCandidate, 0, len(resp.Results))
 			for _, r := range resp.Results {
 				candidates = append(candidates, RouteCandidate{
-					SegmentID:      r.SegmentID,
+					EpisodeID:      r.EpisodeID,
 					DefinitionName: r.DefinitionName,
 					Channel:        r.Channel,
 					ThreadID:       r.ThreadID,
@@ -6062,7 +6062,7 @@ Examples:
 			}
 
 			for i := range candidates {
-				preview, _ := getSegmentPreview(cmd.Context(), database, candidates[i].SegmentID, 200)
+				preview, _ := getEpisodePreview(cmd.Context(), database, candidates[i].EpisodeID, 200)
 				candidates[i].Preview = preview
 			}
 
@@ -7353,7 +7353,7 @@ Examples:
 			type Result struct {
 				OK              bool   `json:"ok"`
 				EventsProcessed int    `json:"events_processed"`
-				SegmentsCreated int    `json:"segments_created"`
+				EpisodesCreated int    `json:"episodes_created"`
 				FacetsCreated   int    `json:"facets_created"`
 				Duration        string `json:"duration"`
 				Message         string `json:"message,omitempty"`
@@ -7415,7 +7415,7 @@ Examples:
 			result := Result{
 				OK:              true,
 				EventsProcessed: extractResult.EventsProcessed,
-				SegmentsCreated: extractResult.SegmentsCreated,
+				EpisodesCreated: extractResult.EpisodesCreated,
 				FacetsCreated:   extractResult.FacetsCreated,
 				Duration:        extractResult.Duration.String(),
 			}
@@ -7425,7 +7425,7 @@ Examples:
 			} else {
 				fmt.Println("AIX Metadata Extraction Results:")
 				fmt.Printf("  Events processed: %d\n", result.EventsProcessed)
-				fmt.Printf("  Segments created: %d\n", result.SegmentsCreated)
+				fmt.Printf("  Episodes created: %d\n", result.EpisodesCreated)
 				fmt.Printf("  Facets created: %d\n", result.FacetsCreated)
 				fmt.Printf("  Duration: %s\n", result.Duration)
 			}
@@ -7563,18 +7563,18 @@ func cosineSimilarity(a, b []float64) float64 {
 	return dotProduct / (math.Sqrt(normA) * math.Sqrt(normB))
 }
 
-// getSegmentPreview returns a text preview of a segment
-func getSegmentPreview(ctx context.Context, database *sql.DB, segmentID string, maxLen int) (string, error) {
+// getEpisodePreview returns a text preview of an episode
+func getEpisodePreview(ctx context.Context, database *sql.DB, episodeID string, maxLen int) (string, error) {
 	rows, err := database.QueryContext(ctx, `
 		SELECT e.content, p.canonical_name
-		FROM segment_events se
-		JOIN events e ON se.event_id = e.id
+		FROM episode_events ee
+		JOIN events e ON ee.event_id = e.id
 		LEFT JOIN event_participants ep ON e.id = ep.event_id AND ep.role = 'sender'
 		LEFT JOIN persons p ON ep.person_id = p.id
-		WHERE se.segment_id = ?
-		ORDER BY se.position
+		WHERE ee.episode_id = ?
+		ORDER BY ee.position
 		LIMIT 5
-	`, segmentID)
+	`, episodeID)
 	if err != nil {
 		return "", err
 	}

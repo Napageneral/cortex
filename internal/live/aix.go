@@ -108,10 +108,10 @@ func NewAixWatcher(db *sql.DB, adapterName string, opts map[string]any, heartbea
 						return
 					}
 					if extractResult.FacetsCreated > 0 {
-						logf("[%s] Extracted %d facets (%d segments)",
+						logf("[%s] Extracted %d facets (%d episodes)",
 							time.Now().Format("15:04:05"),
 							extractResult.FacetsCreated,
-							extractResult.SegmentsCreated,
+							extractResult.EpisodesCreated,
 						)
 					} else {
 						logf("[%s] No new AIX metadata facets", time.Now().Format("15:04:05"))
