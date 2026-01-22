@@ -667,9 +667,47 @@ CREATE TABLE IF NOT EXISTS episode_relationship_mentions (
 CREATE INDEX IF NOT EXISTS idx_episode_rel_mentions_episode ON episode_relationship_mentions(episode_id);
 CREATE INDEX IF NOT EXISTS idx_episode_rel_mentions_relationship ON episode_relationship_mentions(relationship_id);
 
+-- ============================================
+-- MERGE CANDIDATES (suspected duplicates for review)
+-- ============================================
+-- When resolution is uncertain, create a merge candidate for human review.
+-- Better to have duplicates than false-merge corruption.
+-- This is the entity-based version (replaces person-based merge_suggestions).
+CREATE TABLE IF NOT EXISTS entity_merge_candidates (
+    id TEXT PRIMARY KEY,
+    entity_a_id TEXT NOT NULL REFERENCES entities(id),
+    entity_b_id TEXT NOT NULL REFERENCES entities(id),
+    confidence REAL,
+    reason TEXT,  -- 'name_similarity', 'relationship_overlap', 'co_mention', 'hard_identifier', etc.
+    context TEXT, -- JSON with supporting evidence
+    status TEXT DEFAULT 'pending',  -- 'pending', 'merged', 'rejected'
+    created_at TEXT NOT NULL,
+    resolved_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_merge_candidates_status ON entity_merge_candidates(status);
+
+-- ============================================
+-- ENTITY MERGE EVENTS (audit log for entity merges)
+-- ============================================
+-- Tracks all entity merge operations with full audit trail.
+-- This is the entity-based version (replaces person-based merge_events).
+CREATE TABLE IF NOT EXISTS entity_merge_events (
+    id TEXT PRIMARY KEY,
+    source_entity_id TEXT NOT NULL REFERENCES entities(id),
+    target_entity_id TEXT NOT NULL REFERENCES entities(id),
+    merge_type TEXT NOT NULL,      -- 'hard_identifier', 'name_similarity', 'compound', 'manual', etc.
+    triggering_facts TEXT,         -- JSON: facts that triggered the merge
+    similarity_score REAL,
+    created_at TEXT NOT NULL,
+    resolved_by TEXT               -- 'auto', 'user:<id>', etc.
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_merge_events_target ON entity_merge_events(target_entity_id);
+
 -- Insert initial schema version
 INSERT OR IGNORE INTO schema_version (version, applied_at)
-VALUES (18, strftime('%s', 'now'));
+VALUES (19, strftime('%s', 'now'));
 
 -- NOTE: pii_extraction_v1 analysis type is now registered via `cortex compute seed` command
 -- This matches the pattern used for convo-all-v1 and is more maintainable
