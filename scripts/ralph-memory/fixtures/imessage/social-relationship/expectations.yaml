@@ -1,53 +1,38 @@
-# Fixture: Sarah mentions boyfriend David in group chat
-description: "Group chat mentions dating relationship and third-party entity"
+# Fixture: Group chat with Venmo handle and event coordination
+description: "Friends coordinating plans, Casey's Venmo shared for payment"
 
 entities:
   must_have:
     - name_contains: "Tyler"
       entity_type: Person
-
-    - name_contains: "Sarah"
+      
+    - name_contains: "Casey"
       entity_type: Person
 
-    - name_contains: "Mike"
-      entity_type: Person
-
-    - name_contains: "David"
-      entity_type: Person
-
-  # Note: BBQ may be extracted as an Event entity (it's a social gathering)
-  # This is acceptable - removing overly strict must_not_have
   optional:
-    - name_contains: "BBQ"
+    # Casexadams may be extracted as separate entity from Venmo URL
+    - name_contains: "Casexadams"
+      entity_type: Person
+    # Event might be extracted
+    - name_contains: "Marty Supreme"
       entity_type: Event
 
-relationships:
-  must_have:
-    # Sarah is dating David
-    - source_entity_name_contains: "Sarah"
-      relation_type: DATING
-      target_entity_name_contains: "David"
-      # valid_at should be approximately 6 months ago from reference_time
-      # reference_time is 2026-01-20, so valid_at ~2025-07
-      source_type: self_disclosed
-
+aliases:
+  # The Venmo handle could be associated with either Casey or extracted as Casexadams entity
   optional:
-    # David lives at/owns the house on Oak St - might or might not extract
-    - source_entity_name_contains: "David"
-      relation_type: LIVES_AT
+    - alias_like: "%Casexadams%"
+      alias_type: handle
 
-    # Friendship relationships are implicit but may be extracted
-    - relation_type: KNOWS
+relationships:
+  optional:
+    # Tyler attended event
+    - source_entity_name_contains: "Tyler"
+      relation_type: ATTENDED
+    # Casey scheduled/hosted
+    - source_entity_name_contains: "Casey"
+      relation_type: HOSTED
 
 episode_entity_mentions:
   must_have:
     - entity_name_contains: "Tyler"
-    - entity_name_contains: "Sarah"
-    - entity_name_contains: "Mike"
-    - entity_name_contains: "David"
-
-episode_relationship_mentions:
-  must_have:
-    # LLM may use "boyfriend" or "dating David" in the extracted fact
-    - extracted_fact_contains: "dating"
-      source_type: self_disclosed
+    - entity_name_contains: "Casey"

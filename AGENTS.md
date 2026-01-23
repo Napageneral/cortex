@@ -91,6 +91,9 @@ if jsonOutput {
 cortex sync
 
 # Sync specific adapter
+cortex sync imessage
+
+# Sync specific adapter (flag)
 cortex sync --adapter imessage
 
 # Force full re-sync (ignore watermarks)

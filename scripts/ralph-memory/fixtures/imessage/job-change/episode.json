@@ -2,29 +2,45 @@
   "id": "fixture-imessage-jobchange-001",
   "source": "imessage",
   "channel": "imessage",
-  "thread_id": "chat_casey_tyler",
-  "reference_time": "2026-01-15T14:00:00Z",
+  "thread_id": "imessage:+14123035909",
+  "reference_time": "2025-09-06T00:00:00Z",
   "events": [
     {
-      "id": "evt-001",
-      "timestamp": "2026-01-15T14:00:00Z",
+      "id": "imessage:DE8B4258-E898-40E9-9687-1259B1B99381",
+      "timestamp": "2025-09-05T21:37:07Z",
       "sender": "Tyler",
-      "sender_identifier": "+1-707-287-6731",
-      "content": "Big news - I left Intent Systems last month and started at Anthropic!",
+      "sender_identifier": "+17072876731",
+      "content": "Talked to Chris again and the first number he threw out was like 280k TC which is like fully 70k less than when I left Apple",
       "direction": "outbound"
     },
     {
-      "id": "evt-002",
-      "timestamp": "2026-01-15T14:02:00Z",
-      "sender": "Casey Adams",
-      "sender_identifier": "+1-555-123-4567",
-      "content": "Congrats! That's huge!",
+      "id": "imessage:B017C45A-AA1C-4DB7-96D5-EBAF380868EC",
+      "timestamp": "2025-09-05T21:38:31Z",
+      "sender": "Iris",
+      "sender_identifier": "+14123035909",
+      "content": "I wil talk to him later today",
       "direction": "inbound"
+    },
+    {
+      "id": "imessage:21CC2A43-0E0F-4E7B-AC81-D31E0A47CB41",
+      "timestamp": "2025-09-05T21:39:25Z",
+      "sender": "Iris",
+      "sender_identifier": "+14123035909",
+      "content": "Thats also less than your current comp so tell him that also",
+      "direction": "inbound"
+    },
+    {
+      "id": "imessage:6C02D927-2647-495D-AC17-08E6098693B7",
+      "timestamp": "2025-09-05T21:41:02Z",
+      "sender": "Tyler",
+      "sender_identifier": "+17072876731",
+      "content": "I did",
+      "direction": "outbound"
     }
   ],
   "metadata": {
-    "description": "Tyler announces job change - left Intent Systems, started at Anthropic",
-    "coverage_tags": ["job_change", "temporal", "invalid_at", "valid_at", "company", "self_disclosed"],
-    "notes": "Tests: Company entity extraction, bi-temporal (invalid_at on old job, valid_at on new), WORKS_AT relationships"
+    "description": "Tyler discusses job offer with Iris, mentions leaving Apple for new opportunity",
+    "coverage_tags": ["job_change", "temporal", "company", "self_disclosed", "compensation"],
+    "notes": "Tests: Company entity extraction (Apple), temporal inference (left Apple), Person extraction"
   }
 }

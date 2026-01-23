@@ -1,86 +1,52 @@
-# Fixture: User shares personal info in AI chat
-description: "Personal context shared during AI coding session"
+# Fixture: Wire fraud documentation with PII bundle
+description: "Legal document with extensive PII - DOB, address, phone, email, bank info"
 
 entities:
   must_have:
-    - name_contains: "Tyler"
+    - name_contains: "Prendergast"
       entity_type: Person
-
-    - name_contains: "Anthropic"
-      entity_type: Company
-
-    - name_contains: "Austin"
-      entity_type: Location
+      
+    - name_contains: "Adams"
+      entity_type: Person
 
   optional:
-    # Wisconsin might be extracted as origin location
-    - name_contains: "Wisconsin"
+    # Companies mentioned
+    - name_contains: "Capital One"
+      entity_type: Company
+    - name_contains: "JPMorgan"
+      entity_type: Company
+    # Locations
+    - name_contains: "Bayport"
       entity_type: Location
-
-  must_not_have:
-    # Claude (AI assistant) should NOT be an entity - no durable identity
-    - name: "Claude"
+    # Other people
+    - name_contains: "Lauren Taylor"
       entity_type: Person
-
-    - name: "Claude"
-      entity_type: any
-
-    # Dates should NOT be entities - they're target_literals
-    - name: "1990"
-      entity_type: any
-
-    - name: "August 15"
-      entity_type: any
+    - name_contains: "Casey"
+      entity_type: Person
 
 relationships:
-  must_have:
-    # Tyler's birthdate as target_literal
-    - source_entity_name_contains: "Tyler"
-      relation_type: BORN_ON
-      target_literal_like: "1990-08-15%"
-
-    # Tyler lives in Austin
-    - source_entity_name_contains: "Tyler"
-      relation_type: LIVES_IN
-      target_entity_name_contains: "Austin"
-      # valid_at should be 2023
-      valid_at_like: "2023%"
-
-    # Tyler works at Anthropic
-    - source_entity_name_contains: "Tyler"
-      relation_type: WORKS_AT
-      target_entity_name_contains: "Anthropic"
-
   optional:
-    # Tyler grew up in / from Wisconsin
-    - source_entity_name_contains: "Tyler"
-      relation_type: FROM
-      target_entity_name_contains: "Wisconsin"
-
-    # Tyler has role software engineer
-    - source_entity_name_contains: "Tyler"
-      relation_type: HAS_ROLE
+    # Prendergast born on date (format may vary: 1972-05-22, 05/22/1972, etc.)
+    - source_entity_name_contains: "Prendergast"
+      relation_type: BORN_ON
+    # Prendergast lives at address
+    - source_entity_name_contains: "Prendergast"
+      relation_type: LIVES_IN
+    # Has email
+    - relation_type: HAS_EMAIL
 
 aliases:
-  must_not_have:
-    # AI assistant messages should not create aliases
-    - alias_type: email
-      entity_name_contains: "Claude"
+  optional:
+    # Prendergast's email should be promoted
+    - entity_name_contains: "Prendergast"
+      alias_like: "%prendergastdev@gmail.com%"
+      alias_type: email
+    # Prendergast's phone
+    - entity_name_contains: "Prendergast"
+      alias_like: "%516-617-2280%"
+      alias_type: phone
 
 episode_entity_mentions:
   must_have:
-    - entity_name_contains: "Tyler"
-    - entity_name_contains: "Anthropic"
-    - entity_name_contains: "Austin"
-
-episode_relationship_mentions:
-  must_have:
-    # All relationships should be self_disclosed (Tyler said them about himself)
-    - extracted_fact_contains: "born"
-      source_type: self_disclosed
-
-    - extracted_fact_contains: "Austin"
-      source_type: self_disclosed
-
-    - extracted_fact_contains: "Anthropic"
-      source_type: self_disclosed
+    - entity_name_contains: "Prendergast"
+    - entity_name_contains: "Adams"

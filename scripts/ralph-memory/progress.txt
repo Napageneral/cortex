@@ -636,3 +636,44 @@
 - Use *_like patterns for temporal matching (e.g., "2025-12%")
 - optional section for things that might or might not be extracted (LLM variance)
 
+---
+## 2026-01-22 - [MS-022] Implement verification harness runner
+- Created VerificationHarness struct that orchestrates fixture loading and execution
+- Created cmd/verify-memory CLI tool with flags: -fixtures, -fixture, -verbose, -model, -skip-embeddings
+- Implemented fixture loading from directory structure (source/fixture-name/episode.json + expectations.yaml)
+- Implemented expectation matching with flexible matchers:
+  - name, name_contains for entity name matching
+  - entity_type (supports "any" wildcard)
+  - relation_type, source_entity_name_contains, target_entity_name_contains
+  - target_literal, target_literal_like (SQL LIKE patterns with %)
+  - valid_at, valid_at_like, invalid_at, invalid_at_like
+  - alias, alias_type, is_shared
+  - extracted_fact_contains, source_type
+  - relationship_id (supports null check)
+- Implemented human-readable output with FormatResult, FormatSummary, FormatDetailedOutput
+- Created VerifyEntity, VerifyRelationship, VerifyAlias, VerifyEntityMention, VerifyRelMention structs
+- Exit codes: 0 = all pass, 1 = failures, 2 = configuration error
+- Database isolation: each fixture runs against fresh in-memory SQLite
+
+**Files created:**
+- `cmd/verify-memory/main.go` - CLI entry point with flag parsing, schema initialization
+- `internal/memory/verify.go` - VerificationHarness, types, matching logic, formatting
+- `internal/memory/verify_test.go` - 26 unit tests covering all matching logic
+
+**Learnings:**
+- matchLikePattern converts SQL LIKE patterns (%) to Go string operations (prefix/suffix/contains)
+- Fixture isolation requires dropping and recreating all tables between runs
+- Helper function naming collisions across test files in same package require unique names
+- yaml.Unmarshal handles nested structures well with map[string]interface{} for flexible expectations
+- ExpectationGroup with MustHave/MustNotHave/Optional provides clean assertion organization
+
+### Verification Harness Pattern
+- VerificationHarness holds db, fixturesPath, pipeline references
+- LoadFixture parses episode.json (JSON) and expectations.yaml (YAML) from directory
+- RunFixture: build content → create EpisodeInput → pipeline.Process → collectOutputs → verifyExpectations
+- collectOutputs queries all tables: entities, relationships, aliases, mentions
+- verifyExpectations loops through groups calling match* functions
+- Each match* function iterates items looking for ANY match (must_have) or forbidding ANY match (must_not_have)
+- FormatResult shows [PASS]/[FAIL] with failure details
+- FormatSummary aggregates counts and lists all results
+

@@ -1041,9 +1041,16 @@ queryable event store with identity resolution.`,
 
 	// sync command
 	syncCmd := &cobra.Command{
-		Use:   "sync",
+		Use:   "sync [adapter]",
 		Short: "Sync communications from adapters",
 		Long:  "Synchronize communications from all enabled adapters or a specific adapter",
+		Args:  cobra.MaximumNArgs(1),
+		Example: strings.TrimSpace(`
+cortex sync
+cortex sync imessage
+cortex sync --adapter gmail --full
+cortex sync --background
+`),
 		Run: func(cmd *cobra.Command, args []string) {
 			type Result struct {
 				OK       bool                 `json:"ok"`
@@ -1052,9 +1059,27 @@ queryable event store with identity resolution.`,
 				Mode     string               `json:"mode,omitempty"`
 			}
 
-			adapterName, _ := cmd.Flags().GetString("adapter")
+			adapterFlag, _ := cmd.Flags().GetString("adapter")
 			full, _ := cmd.Flags().GetBool("full")
 			background, _ := cmd.Flags().GetBool("background")
+
+			if adapterFlag != "" && len(args) > 0 {
+				result := Result{
+					OK:      false,
+					Message: "Provide adapter as a positional arg or via --adapter, not both",
+				}
+				if jsonOutput {
+					printJSON(result)
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+				}
+				os.Exit(1)
+			}
+
+			adapterName := adapterFlag
+			if adapterName == "" && len(args) > 0 {
+				adapterName = args[0]
+			}
 
 			// Background mode: re-exec without --background and return immediately.
 			if background {

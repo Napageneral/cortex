@@ -294,14 +294,46 @@ func (h *VerificationHarness) RunFixture(ctx context.Context, fixture *Fixture) 
 	return result, nil
 }
 
-// buildEpisodeContent concatenates event content with sender attribution
+// buildEpisodeContent formats events with full context for extraction
 func (h *VerificationHarness) buildEpisodeContent(episode FixtureEpisode) string {
 	var parts []string
+
+	// Add thread context header
+	if episode.ThreadID != "" {
+		parts = append(parts, fmt.Sprintf("[Thread: %s]", episode.ThreadID))
+	}
+
 	for _, event := range episode.Events {
-		if event.Content != "" {
-			line := fmt.Sprintf("%s: %s", event.Sender, event.Content)
-			parts = append(parts, line)
+		if event.Content == "" {
+			continue
 		}
+
+		// Build event line with full context
+		var line strings.Builder
+
+		// Timestamp (if available)
+		if event.Timestamp != "" {
+			line.WriteString(fmt.Sprintf("[%s] ", event.Timestamp))
+		}
+
+		// Sender with identifier (phone/email)
+		if event.SenderIdentifier != "" {
+			line.WriteString(fmt.Sprintf("%s (%s)", event.Sender, event.SenderIdentifier))
+		} else {
+			line.WriteString(event.Sender)
+		}
+
+		// Direction indicator
+		if event.Direction == "outbound" {
+			line.WriteString(" →")
+		} else {
+			line.WriteString(" ←")
+		}
+
+		// Content
+		line.WriteString(fmt.Sprintf(" %s", event.Content))
+
+		parts = append(parts, line.String())
 	}
 	return strings.Join(parts, "\n")
 }

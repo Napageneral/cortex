@@ -2,29 +2,29 @@
   "id": "fixture-imessage-identity-001",
   "source": "imessage",
   "channel": "imessage",
-  "thread_id": "chat_casey_tyler",
-  "reference_time": "2026-01-22T10:30:00Z",
+  "thread_id": "imessage:+18313452220",
+  "reference_time": "2025-04-18T15:00:00Z",
   "events": [
     {
-      "id": "evt-001",
-      "timestamp": "2026-01-22T10:28:00Z",
+      "id": "imessage:7C6594DE-1F81-498C-B3D6-8FE4E2A72250",
+      "timestamp": "2025-04-18T14:56:22Z",
       "sender": "Tyler",
-      "sender_identifier": "+1-707-287-6731",
-      "content": "hey what's your work email again?",
+      "sender_identifier": "+17072876731",
+      "content": "Tnapathy@gmail.com is my personal email",
       "direction": "outbound"
     },
     {
-      "id": "evt-002",
-      "timestamp": "2026-01-22T10:30:00Z",
-      "sender": "Casey Adams",
-      "sender_identifier": "+1-555-123-4567",
-      "content": "my new work email is casey.adams@company.com",
+      "id": "imessage:EAA951E4-ABAC-456B-ABED-F956BA5713B3",
+      "timestamp": "2025-04-18T14:58:18Z",
+      "sender": "Joe Schooler",
+      "sender_identifier": "+18313452220",
+      "content": "Thanks man! Ill send you an email with some prds on the concepts, no need for a NDA!",
       "direction": "inbound"
     }
   ],
   "metadata": {
-    "description": "Casey self-discloses their work email in response to Tyler's question",
+    "description": "Tyler self-discloses his personal email to Joe Schooler",
     "coverage_tags": ["identity_disclosure", "email", "self_disclosed", "imessage"],
-    "notes": "Tests: entity extraction (2 people), identity promotion (email → alias), source_type detection"
+    "notes": "Tests: entity extraction (2 people), identity promotion (email → alias), source_type=self_disclosed"
   }
 }

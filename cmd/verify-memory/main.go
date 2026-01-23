@@ -150,6 +150,16 @@ func main() {
 	// Print summary
 	fmt.Println(memory.FormatSummary(results))
 
+	// Print usage stats
+	stats := geminiClient.GetUsageStats()
+	fmt.Printf("\n--- API Usage ---\n")
+	fmt.Printf("Generate calls: %d\n", stats.GenerateCalls)
+	fmt.Printf("Prompt tokens: %d\n", stats.PromptTokens)
+	fmt.Printf("Output tokens: %d\n", stats.OutputTokens)
+	fmt.Printf("Embed calls: %d\n", stats.EmbedCalls)
+	fmt.Printf("Embed characters: %d\n", stats.EmbedChars)
+	fmt.Printf("Estimated cost: $%.6f\n", stats.EstimatedCostUSD)
+
 	// Exit with appropriate code
 	allPassed := true
 	for _, r := range results {
@@ -173,7 +183,7 @@ func initSchema(db *sql.DB) error {
 		"episode_relationship_mentions",
 		"episode_entity_mentions",
 		"entity_merge_events",
-		"entity_merge_candidates",
+		"merge_candidates",
 		"relationships",
 		"entity_aliases",
 		"entities",
@@ -226,12 +236,14 @@ func initSchema(db *sql.DB) error {
 			target_type TEXT NOT NULL,
 			target_id TEXT NOT NULL,
 			model TEXT NOT NULL,
-			embedding BLOB NOT NULL,
+			embedding_blob BLOB NOT NULL,
+			dimension INTEGER NOT NULL,
 			source_text_hash TEXT,
-			created_at TEXT DEFAULT (datetime('now')),
+			created_at INTEGER NOT NULL,
 			UNIQUE(target_type, target_id, model)
 		);
 		CREATE INDEX IF NOT EXISTS idx_embeddings_target ON embeddings(target_type, target_id);
+		CREATE INDEX IF NOT EXISTS idx_embeddings_model ON embeddings(model);
 
 		-- Entities table
 		CREATE TABLE IF NOT EXISTS entities (
@@ -315,23 +327,37 @@ func initSchema(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_episode_rel_mentions_episode ON episode_relationship_mentions(episode_id);
 		CREATE INDEX IF NOT EXISTS idx_episode_rel_mentions_relationship ON episode_relationship_mentions(relationship_id);
 
-		-- Entity merge candidates
-		CREATE TABLE IF NOT EXISTS entity_merge_candidates (
+		-- Merge candidates
+		CREATE TABLE IF NOT EXISTS merge_candidates (
 			id TEXT PRIMARY KEY,
-			entity_a_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
-			entity_b_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+			entity_a_id TEXT NOT NULL REFERENCES entities(id),
+			entity_b_id TEXT NOT NULL REFERENCES entities(id),
+
+			-- Scoring
 			confidence REAL NOT NULL,
-			reason TEXT,
-			context TEXT,
-			matching_facts TEXT,
 			auto_eligible INTEGER DEFAULT 0,
+
+			-- Evidence
+			reason TEXT NOT NULL,
+			matching_facts TEXT,
+			context TEXT,
+			candidates_considered TEXT,
+
+			-- Conflicts
+			conflicts TEXT,
+
+			-- Status
 			status TEXT DEFAULT 'pending',
-			created_at TEXT DEFAULT (datetime('now')),
+
+			-- Resolution
+			created_at TEXT NOT NULL,
 			resolved_at TEXT,
 			resolved_by TEXT,
+			resolution_reason TEXT,
 			UNIQUE(entity_a_id, entity_b_id)
 		);
-		CREATE INDEX IF NOT EXISTS idx_entity_merge_candidates_status ON entity_merge_candidates(status);
+		CREATE INDEX IF NOT EXISTS idx_merge_candidates_status ON merge_candidates(status);
+		CREATE INDEX IF NOT EXISTS idx_merge_candidates_auto ON merge_candidates(auto_eligible) WHERE status = 'pending';
 
 		-- Entity merge events
 		CREATE TABLE IF NOT EXISTS entity_merge_events (

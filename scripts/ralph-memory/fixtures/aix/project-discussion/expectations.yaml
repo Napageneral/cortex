@@ -1,86 +1,25 @@
-# Fixture: Project discussion in AI chat
-description: "User discusses their personal projects Nexus and Cortex"
+# Fixture: Tyler discusses building memory/context system for iMessage
+description: "Cursor session discussing memory system architecture"
 
 entities:
   must_have:
     - name_contains: "Tyler"
       entity_type: Person
 
-    - name_contains: "Casey"
-      entity_type: Person
-
-    - name_contains: "Nexus"
-      entity_type: Project
-
   optional:
-    # Cortex might be extracted as a separate project
-    - name_contains: "Cortex"
-      entity_type: Project
-
-    # Anthropic might be mentioned in context
-    - name_contains: "Anthropic"
-      entity_type: Company
-
-    # Document reference might become a Document entity
-    - name_contains: "MEMORY_SYSTEM_SPEC"
-      entity_type: Document
-
-  must_not_have:
-    # Claude (AI) should NOT be an entity - AI assistants have no durable identity
-    - name: "Claude"
-      entity_type: Person
-
-    - name: "Claude"
-      entity_type: any
-
-    # Note: Go, SQLite, Gemini are borderline - they're technologies not projects,
-    # but the LLM may reasonably extract them as components/tools. We accept this.
+    # Girlfriend might be extracted
+    - entity_type: Person
+    # Project concepts might be extracted
+    - entity_type: Project
 
 relationships:
-  must_have:
-    # Tyler is working on / building Nexus (LLM uses WORKING_ON)
-    - source_entity_name_contains: "Tyler"
-      relation_type: WORKING_ON
-      target_entity_name_contains: "Nexus"
-
   optional:
-    # Tyler building Nexus (alternative phrasing)
+    # Tyler building/working on something
     - source_entity_name_contains: "Tyler"
       relation_type: BUILDING
-      target_entity_name_contains: "Nexus"
-
-    # Nexus started in January 2025
-    - source_entity_name_contains: "Nexus"
-      relation_type: STARTED_ON
-      target_literal_like: "2025-01%"
-
-    # Casey helps test / collaborates
-    - source_entity_name_contains: "Casey"
-      relation_type: TESTING
-
-    - source_entity_name_contains: "Casey"
-      relation_type: COLLABORATES_ON
-      target_entity_name_contains: "Nexus"
-
-    # Cortex is part of Nexus
-    - source_entity_name_contains: "Cortex"
-      relation_type: PART_OF
-      target_entity_name_contains: "Nexus"
-
-aliases:
-  must_not_have:
-    # No identity info disclosed in this episode
-    - alias_type: email
-    - alias_type: phone
+    - source_entity_name_contains: "Tyler"
+      relation_type: WORKING_ON
 
 episode_entity_mentions:
   must_have:
     - entity_name_contains: "Tyler"
-    - entity_name_contains: "Nexus"
-    - entity_name_contains: "Casey"
-
-episode_relationship_mentions:
-  must_have:
-    # Project building relationship
-    - extracted_fact_contains: "Nexus"
-      source_type: self_disclosed

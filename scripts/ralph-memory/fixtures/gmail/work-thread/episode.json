@@ -1,32 +1,24 @@
 {
   "id": "fixture-gmail-workthread-001",
   "source": "gmail",
-  "channel": "email",
-  "thread_id": "thread_meeting_proposal",
-  "reference_time": "2026-01-08T15:30:00Z",
+  "channel": "gmail",
+  "thread_id": "gmail:199ee12a686318d1",
+  "reference_time": "2025-10-16T17:34:42Z",
   "events": [
     {
-      "id": "evt-001",
-      "timestamp": "2026-01-08T14:00:00Z",
-      "sender": "Jeff Martinez",
-      "sender_identifier": "jeff.martinez@cleardata.com",
-      "content": "Subject: Re: Proposal Meeting\n\nHi Tyler,\n\nFollowing up on our call - I'd like to schedule a meeting with you and Vlad to discuss the partnership proposal.\n\nCan we do Thursday at 2pm? I'll send a calendar invite once confirmed.\n\nBest,\nJeff Martinez\nSenior VP of Partnerships\nCLEAR Data Solutions\njeff.martinez@cleardata.com\n+1-512-555-9876",
-      "direction": "inbound",
-      "subject": "Re: Proposal Meeting"
-    },
-    {
-      "id": "evt-002",
-      "timestamp": "2026-01-08T15:30:00Z",
-      "sender": "Tyler",
-      "sender_identifier": "tyler@intent-systems.com",
-      "content": "Subject: Re: Proposal Meeting\n\nHi Jeff,\n\nThursday at 2pm works for me. I'll loop in Vlad.\n\nTyler",
-      "direction": "outbound",
-      "subject": "Re: Proposal Meeting"
+      "id": "gmail:199ee1698ab93d44",
+      "timestamp": "2025-10-16T17:34:42Z",
+      "sender": "Tyler Brandt",
+      "sender_identifier": "tnapathy@gmail.com",
+      "recipient": "charley.griffiths@clearme.com",
+      "subject": "Meeting with Jeff/Vlad",
+      "content": "Hey Charley,\n\nThanks for clarifying the policy issue.\nMy last day is next Tuesday (Oct 22nd), so I'm free to meet any time\nWednesday onwards.\n\nI have a time-sensitive proposal that could benefit CLEAR in both the short\nand long term, so ideally we'd connect that day/week.\nI am flexible and can make any time Wed-Fri work. Happy to work around\ntheir schedules.\n\nThanks for coordinating this,\nTyler",
+      "direction": "outbound"
     }
   ],
   "metadata": {
-    "description": "Work email thread discussing a meeting with colleague and external partner",
-    "coverage_tags": ["work_thread", "colleague", "email_signature", "identity", "company", "self_disclosed"],
-    "notes": "Tests: Person entities from email thread, Company extraction (CLEAR Data Solutions), WORKS_AT relationship, email signature parsing for identity (phone, email), role/title extraction"
+    "description": "Tyler emails Charley at CLEAR about scheduling a meeting with Jeff/Vlad after leaving his job",
+    "coverage_tags": ["work_email", "scheduling", "company", "person", "job_change"],
+    "notes": "Tests: Person extraction (Tyler, Charley, Jeff, Vlad), Company extraction (CLEAR), job transition context"
   }
 }

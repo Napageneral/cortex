@@ -85,6 +85,7 @@ cortex timeline 2026-01
 | Command | Description |
 |---------|-------------|
 | `cortex sync` | Sync all connected adapters |
+| `cortex sync imessage` | Sync specific adapter (positional) |
 | `cortex sync --adapter imessage` | Sync specific adapter |
 | `cortex sync --full` | Full repopulation |
 

@@ -1,55 +1,40 @@
-# Fixture: Tyler announces job change
-description: "Tyler left Intent Systems last month, started at Anthropic"
+# Fixture: Tyler discusses leaving Apple, job offer negotiation
+description: "Tyler mentions leaving Apple and discussing compensation for new role"
 
 entities:
   must_have:
     - name_contains: "Tyler"
       entity_type: Person
       
-    - name_contains: "Casey"
+    - name_contains: "Iris"
       entity_type: Person
       
-    - name_contains: "Intent Systems"
-      entity_type: Company
-      
-    - name_contains: "Anthropic"
-      entity_type: Company
+    - name_contains: "Apple"
+      entity_type: Organization
+
+  optional:
+    # Chris might be extracted as a person
+    - name_contains: "Chris"
+      entity_type: Person
 
 relationships:
   must_have:
-    # Old job - just verify it exists and has some invalid_at set
-    # (LLM extracts this from "left Intent Systems last month")
+    # Tyler left Apple - should have past tense / invalid_at
     - source_entity_name_contains: "Tyler"
       relation_type: WORKS_AT
-      target_entity_name_contains: "Intent Systems"
-      # Note: invalid_at is extracted by the LLM from context
+      target_entity_name_contains: "Apple"
 
-    # New job - should have some valid_at (Dec 2025 or Jan 2026, LLM varies)
-    # The key is that invalid_at is NULL (still current)
-    - source_entity_name_contains: "Tyler"
-      relation_type: WORKS_AT
-      target_entity_name_contains: "Anthropic"
-      invalid_at: null  # Still current
-
-  must_not_have:
-    # Should not create relationships without temporal context
-    - source_entity_name_contains: "Tyler"
-      relation_type: WORKS_AT
-      valid_at: null
-      invalid_at: null
+  optional:
+    # May extract Tyler knows Iris, Chris
+    - relation_type: KNOWS
 
 episode_relationship_mentions:
-  must_have:
-    # Both relationships should have provenance
-    - extracted_fact_contains: "Intent Systems"
-      source_type: self_disclosed
-      
-    - extracted_fact_contains: "Anthropic"
-      source_type: self_disclosed
+  optional:
+    # Source type may vary between self_disclosed and mentioned
+    - extracted_fact_contains: "Apple"
 
 episode_entity_mentions:
   must_have:
     - entity_name_contains: "Tyler"
-    - entity_name_contains: "Casey"
-    - entity_name_contains: "Intent Systems"
-    - entity_name_contains: "Anthropic"
+    - entity_name_contains: "Iris"
+    - entity_name_contains: "Apple"

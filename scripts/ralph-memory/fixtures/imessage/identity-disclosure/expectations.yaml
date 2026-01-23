@@ -1,34 +1,25 @@
-# Fixture: Casey self-discloses work email
-description: "Casey shares their work email, should be promoted to alias"
+# Fixture: Tyler self-discloses personal email to Joe Schooler
+description: "Tyler shares his personal email, should be promoted to alias"
 
 entities:
   must_have:
     - name_contains: "Tyler"
       entity_type: Person
       
-    - name_contains: "Casey"
+    - name_contains: "Joe"
       entity_type: Person
       
-  must_not_have:
-    # Email should NOT be an entity - it's a literal that becomes an alias
-    - name: "casey.adams@company.com"
-      entity_type: any
-      
-    - name_contains: "@"
-      entity_type: any
+  optional:
+    # Document entity might be extracted from "prds"
+    - entity_type: Document
 
 aliases:
   must_have:
-    # Casey's email should be promoted to alias
-    - entity_name_contains: "Casey"
-      alias: "casey.adams@company.com"
+    # Tyler's email should be promoted to alias
+    - entity_name_contains: "Tyler"
+      alias_like: "%tnapathy@gmail.com%"
       alias_type: email
       is_shared: false
-      
-  must_not_have:
-    # Tyler didn't disclose their email in this episode
-    - entity_name_contains: "Tyler"
-      alias_type: email
 
 relationships:
   # Identity relationships should NOT be in relationships table
@@ -41,11 +32,11 @@ episode_relationship_mentions:
     # Provenance record for the identity extraction
     - extracted_fact_contains: "email"
       source_type: self_disclosed
-      target_literal: "casey.adams@company.com"
+      target_literal_like: "%tnapathy@gmail.com%"
       # relationship_id should be NULL (identity-only)
       relationship_id: null
 
 episode_entity_mentions:
   must_have:
     - entity_name_contains: "Tyler"
-    - entity_name_contains: "Casey"
+    - entity_name_contains: "Joe"

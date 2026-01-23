@@ -2,45 +2,50 @@
   "id": "fixture-imessage-social-001",
   "source": "imessage",
   "channel": "imessage",
-  "thread_id": "chat_group_friends",
-  "reference_time": "2026-01-20T19:30:00Z",
+  "thread_id": "imessage:chat300385060851851889",
+  "reference_time": "2026-01-01T00:00:00Z",
   "events": [
     {
-      "id": "evt-001",
-      "timestamp": "2026-01-20T19:25:00Z",
+      "id": "imessage:D93AF67D-0A13-4FA3-8909-271A8783BF36",
+      "timestamp": "2026-01-01T00:39:28Z",
+      "sender": "Unknown",
+      "content": "https://venmo.com/u/Casexadams",
+      "direction": "inbound"
+    },
+    {
+      "id": "imessage:6D354DF8-CA97-4C7F-9F06-B98EACCF1A98",
+      "timestamp": "2026-01-01T00:55:58Z",
       "sender": "Tyler",
-      "sender_identifier": "+1-707-287-6731",
-      "content": "Anyone want to come over for dinner Saturday?",
+      "sender_identifier": "+17072876731",
+      "content": "TLC option, walking up",
       "direction": "outbound"
     },
     {
-      "id": "evt-002",
-      "timestamp": "2026-01-20T19:27:00Z",
-      "sender": "Sarah Chen",
-      "sender_identifier": "+1-512-555-8842",
-      "content": "My boyfriend's house has a yard so we could do a BBQ there instead!",
+      "id": "imessage:2FA53297-C1BA-4840-9066-62C78361B60B",
+      "timestamp": "2026-01-01T12:45:52Z",
+      "sender": "Unknown",
+      "content": "Everyone pay casey if you didn't yet!",
       "direction": "inbound"
     },
     {
-      "id": "evt-003",
-      "timestamp": "2026-01-20T19:28:00Z",
-      "sender": "Mike",
-      "sender_identifier": "+1-408-555-1234",
-      "content": "Sounds good! Is that David's place?",
+      "id": "imessage:910291B9-C281-41AC-A412-76A6FDC9D1BA",
+      "timestamp": "2026-01-01T18:17:51Z",
+      "sender": "Unknown",
+      "content": "Marty Supreme on Sunday at 6:15. Any takers?",
       "direction": "inbound"
     },
     {
-      "id": "evt-004",
-      "timestamp": "2026-01-20T19:30:00Z",
-      "sender": "Sarah Chen",
-      "sender_identifier": "+1-512-555-8842",
-      "content": "Yeah David's place on Oak St. We've been together about 6 months now",
-      "direction": "inbound"
+      "id": "imessage:3A64783E-35D8-4084-8D22-5965CC77D4B7",
+      "timestamp": "2026-01-01T18:20:40Z",
+      "sender": "Tyler",
+      "sender_identifier": "+17072876731",
+      "content": "I'll be there",
+      "direction": "outbound"
     }
   ],
   "metadata": {
-    "description": "Group chat where Sarah mentions her boyfriend David and their relationship duration",
-    "coverage_tags": ["social_relationship", "dating", "group_chat", "third_party_mention"],
-    "notes": "Tests: DATING relationship extraction, third-party entity (David), temporal context (6 months), group chat multi-entity"
+    "description": "Group chat with friends coordinating plans, Casey's Venmo shared for payment",
+    "coverage_tags": ["group_chat", "social", "payment_handle", "scheduling"],
+    "notes": "Tests: Person extraction from group chat, Venmo handle extraction, event/scheduling"
   }
 }

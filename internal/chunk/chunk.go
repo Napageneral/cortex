@@ -11,15 +11,15 @@ import (
 	"github.com/google/uuid"
 )
 
-// Chunker defines the interface for segment chunking strategies
+// Chunker defines the interface for episode chunking strategies
 type Chunker interface {
-	// Chunk creates segments based on the strategy
+	// Chunk creates episodes based on the strategy
 	Chunk(ctx context.Context, db *sql.DB, definitionID string) (ChunkResult, error)
 }
 
 // ChunkResult tracks the outcome of a chunking operation
 type ChunkResult struct {
-	SegmentsCreated int
+	EpisodesCreated int
 	EventsProcessed int
 	Duration        time.Duration
 }
@@ -38,7 +38,7 @@ type TimeGapConfig struct {
 	Scope      string `json:"scope"`       // "thread" or "channel"
 }
 
-// TimeGapChunker implements time-gap based segment chunking
+// TimeGapChunker implements time-gap based episode chunking
 type TimeGapChunker struct {
 	config TimeGapConfig
 }
@@ -56,7 +56,7 @@ func (c *TimeGapChunker) Chunk(ctx context.Context, db *sql.DB, definitionID str
 	// Get definition details to determine scope
 	var defName, channel string
 	err := db.QueryRowContext(ctx, `
-		SELECT name, channel FROM segment_definitions WHERE id = ?
+		SELECT name, channel FROM episode_definitions WHERE id = ?
 	`, definitionID).Scan(&defName, &channel)
 	if err != nil {
 		return result, fmt.Errorf("failed to fetch definition: %w", err)
@@ -141,22 +141,22 @@ func (c *TimeGapChunker) Chunk(ctx context.Context, db *sql.DB, definitionID str
 		return result, fmt.Errorf("error iterating events: %w", err)
 	}
 
-	// Process each group and create segments based on time gaps
+	// Process each group and create episodes based on time gaps
 	for groupKey, events := range eventsByGroup {
 		if len(events) == 0 {
 			continue
 		}
 
-		// Split events into segments based on time gaps
-		segments := c.splitByTimeGap(events)
+		// Split events into episodes based on time gaps
+		episodes := c.splitByTimeGap(events)
 
-		// Insert segments into database
-		for _, seg := range segments {
-			err := c.insertSegment(ctx, db, definitionID, groupKey, seg, channel)
+		// Insert episodes into database
+		for _, ep := range episodes {
+			err := c.insertEpisode(ctx, db, definitionID, groupKey, ep, channel)
 			if err != nil {
-				return result, fmt.Errorf("failed to insert segment: %w", err)
+				return result, fmt.Errorf("failed to insert episode: %w", err)
 			}
-			result.SegmentsCreated++
+			result.EpisodesCreated++
 		}
 	}
 
@@ -164,8 +164,8 @@ func (c *TimeGapChunker) Chunk(ctx context.Context, db *sql.DB, definitionID str
 	return result, nil
 }
 
-// segment represents a chunked group of events
-type segment struct {
+// episode represents a chunked group of events
+type episode struct {
 	events    []Event
 	startTime int64
 	endTime   int64
@@ -173,14 +173,14 @@ type segment struct {
 	channel   string
 }
 
-// splitByTimeGap splits events into segments based on time gaps
-func (c *TimeGapChunker) splitByTimeGap(events []Event) []segment {
+// splitByTimeGap splits events into episodes based on time gaps
+func (c *TimeGapChunker) splitByTimeGap(events []Event) []episode {
 	if len(events) == 0 {
 		return nil
 	}
 
-	segments := []segment{}
-	currentSeg := segment{
+	episodes := []episode{}
+	currentEp := episode{
 		events:    []Event{events[0]},
 		startTime: events[0].Timestamp,
 		endTime:   events[0].Timestamp,
@@ -189,12 +189,12 @@ func (c *TimeGapChunker) splitByTimeGap(events []Event) []segment {
 	}
 
 	for i := 1; i < len(events); i++ {
-		timeSinceLastEvent := events[i].Timestamp - currentSeg.endTime
+		timeSinceLastEvent := events[i].Timestamp - currentEp.endTime
 
 		if timeSinceLastEvent > c.config.GapSeconds {
-			// Gap exceeded, finalize current segment and start new one
-			segments = append(segments, currentSeg)
-			currentSeg = segment{
+			// Gap exceeded, finalize current episode and start new one
+			episodes = append(episodes, currentEp)
+			currentEp = episode{
 				events:    []Event{events[i]},
 				startTime: events[i].Timestamp,
 				endTime:   events[i].Timestamp,
@@ -202,76 +202,76 @@ func (c *TimeGapChunker) splitByTimeGap(events []Event) []segment {
 				channel:   events[i].Channel,
 			}
 		} else {
-			// Continue current segment
-			currentSeg.events = append(currentSeg.events, events[i])
-			currentSeg.endTime = events[i].Timestamp
+			// Continue current episode
+			currentEp.events = append(currentEp.events, events[i])
+			currentEp.endTime = events[i].Timestamp
 		}
 	}
 
-	// Don't forget the last segment
-	segments = append(segments, currentSeg)
-	return segments
+	// Don't forget the last episode
+	episodes = append(episodes, currentEp)
+	return episodes
 }
 
-// insertSegment inserts a segment and its event mappings
-func (c *TimeGapChunker) insertSegment(ctx context.Context, db *sql.DB, definitionID, groupKey string, seg segment, scopeChannel string) error {
+// insertEpisode inserts an episode and its event mappings
+func (c *TimeGapChunker) insertEpisode(ctx context.Context, db *sql.DB, definitionID, groupKey string, ep episode, scopeChannel string) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
-	segmentID := uuid.New().String()
+	episodeID := uuid.New().String()
 	now := time.Now().Unix()
 
-	// Determine thread_id and channel values for the segment record
+	// Determine thread_id and channel values for the episode record
 	var threadIDValue interface{} = nil
-	if seg.threadID != "" && c.config.Scope == "thread" {
-		threadIDValue = seg.threadID
+	if ep.threadID != "" && c.config.Scope == "thread" {
+		threadIDValue = ep.threadID
 	}
 
 	var channelValue interface{} = nil
 	if scopeChannel != "" {
 		channelValue = scopeChannel
-	} else if seg.channel != "" {
-		channelValue = seg.channel
+	} else if ep.channel != "" {
+		channelValue = ep.channel
 	}
 
-	// Insert segment
+	// Insert episode
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO segments (
+		INSERT INTO episodes (
 			id, definition_id, channel, thread_id,
 			start_time, end_time, event_count,
 			first_event_id, last_event_id, created_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, segmentID, definitionID, channelValue, threadIDValue,
-		seg.startTime, seg.endTime, len(seg.events),
-		seg.events[0].ID, seg.events[len(seg.events)-1].ID, now)
+	`, episodeID, definitionID, channelValue, threadIDValue,
+		ep.startTime, ep.endTime, len(ep.events),
+		ep.events[0].ID, ep.events[len(ep.events)-1].ID, now)
 
 	if err != nil {
-		return fmt.Errorf("failed to insert segment: %w", err)
+		return fmt.Errorf("failed to insert episode: %w", err)
 	}
 
-	// Insert segment_events mappings
-	for position, event := range seg.events {
+	// Insert episode_events mappings
+	for position, event := range ep.events {
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO segment_events (segment_id, event_id, position)
+			INSERT INTO episode_events (episode_id, event_id, position)
 			VALUES (?, ?, ?)
-		`, segmentID, event.ID, position+1) // position is 1-indexed
+		`, episodeID, event.ID, position+1) // position is 1-indexed
 
 		if err != nil {
-			return fmt.Errorf("failed to insert segment_event mapping: %w", err)
+			return fmt.Errorf("failed to insert episode_event mapping: %w", err)
 		}
 	}
 
 	return tx.Commit()
 }
 
-// CreateDefinition creates a segment definition in the database
+// CreateDefinition creates an episode definition in the database
 func CreateDefinition(ctx context.Context, db *sql.DB, name, channel, strategy string, config interface{}, description string) (string, error) {
 	// Check if definition already exists
 	var existingID string
-	err := db.QueryRowContext(ctx, "SELECT id FROM segment_definitions WHERE name = ?", name).Scan(&existingID)
+	err := db.QueryRowContext(ctx, "SELECT id FROM episode_definitions WHERE name = ?", name).Scan(&existingID)
 	if err == nil {
 		// Definition already exists
 		return existingID, nil
@@ -294,7 +294,7 @@ func CreateDefinition(ctx context.Context, db *sql.DB, name, channel, strategy s
 	}
 
 	_, err = db.ExecContext(ctx, `
-		INSERT INTO segment_definitions (
+		INSERT INTO episode_definitions (
 			id, name, channel, strategy, config_json, description, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`, definitionID, name, channelValue, strategy, string(configJSON), description, now, now)
@@ -308,11 +308,11 @@ func CreateDefinition(ctx context.Context, db *sql.DB, name, channel, strategy s
 
 // ThreadConfig defines configuration for thread-based chunking
 type ThreadConfig struct {
-	// No additional config needed - one segment per thread_id
+	// No additional config needed - one episode per thread_id
 }
 
-// ThreadChunker implements thread-based segment chunking
-// Each unique thread_id becomes one segment
+// ThreadChunker implements thread-based episode chunking
+// Each unique thread_id becomes one episode
 type ThreadChunker struct {
 	config ThreadConfig
 }
@@ -330,7 +330,7 @@ func (c *ThreadChunker) Chunk(ctx context.Context, db *sql.DB, definitionID stri
 	// Get definition details
 	var defName, channel string
 	err := db.QueryRowContext(ctx, `
-		SELECT name, channel FROM segment_definitions WHERE id = ?
+		SELECT name, channel FROM episode_definitions WHERE id = ?
 	`, definitionID).Scan(&defName, &channel)
 	if err != nil {
 		return result, fmt.Errorf("failed to fetch definition: %w", err)
@@ -389,20 +389,20 @@ func (c *ThreadChunker) Chunk(ctx context.Context, db *sql.DB, definitionID stri
 		return result, fmt.Errorf("error iterating events: %w", err)
 	}
 
-	// Create one segment per thread
+	// Create one episode per thread
 	existingThreads := make(map[string]struct{})
 	existingRows, err := db.QueryContext(ctx, `
-		SELECT thread_id FROM segments
+		SELECT thread_id FROM episodes
 		WHERE definition_id = ? AND thread_id IS NOT NULL
 	`, definitionID)
 	if err != nil {
-		return result, fmt.Errorf("failed to query existing segments: %w", err)
+		return result, fmt.Errorf("failed to query existing episodes: %w", err)
 	}
 	for existingRows.Next() {
 		var tid sql.NullString
 		if err := existingRows.Scan(&tid); err != nil {
 			existingRows.Close()
-			return result, fmt.Errorf("failed to scan existing segment: %w", err)
+			return result, fmt.Errorf("failed to scan existing episode: %w", err)
 		}
 		if tid.Valid && tid.String != "" {
 			existingThreads[tid.String] = struct{}{}
@@ -410,7 +410,7 @@ func (c *ThreadChunker) Chunk(ctx context.Context, db *sql.DB, definitionID stri
 	}
 	if err := existingRows.Err(); err != nil {
 		existingRows.Close()
-		return result, fmt.Errorf("error iterating existing segments: %w", err)
+		return result, fmt.Errorf("error iterating existing episodes: %w", err)
 	}
 	existingRows.Close()
 
@@ -422,7 +422,7 @@ func (c *ThreadChunker) Chunk(ctx context.Context, db *sql.DB, definitionID stri
 			continue
 		}
 
-		seg := segment{
+		ep := episode{
 			events:    events,
 			startTime: events[0].Timestamp,
 			endTime:   events[len(events)-1].Timestamp,
@@ -430,60 +430,60 @@ func (c *ThreadChunker) Chunk(ctx context.Context, db *sql.DB, definitionID stri
 			channel:   events[0].Channel,
 		}
 
-		err := c.insertSegment(ctx, db, definitionID, threadID, seg, channel)
+		err := c.insertEpisode(ctx, db, definitionID, threadID, ep, channel)
 		if err != nil {
-			return result, fmt.Errorf("failed to insert segment: %w", err)
+			return result, fmt.Errorf("failed to insert episode: %w", err)
 		}
-		result.SegmentsCreated++
+		result.EpisodesCreated++
 	}
 
 	result.Duration = time.Since(startTime)
 	return result, nil
 }
 
-// insertSegment inserts a segment and its event mappings
-func (c *ThreadChunker) insertSegment(ctx context.Context, db *sql.DB, definitionID, threadID string, seg segment, scopeChannel string) error {
+// insertEpisode inserts an episode and its event mappings
+func (c *ThreadChunker) insertEpisode(ctx context.Context, db *sql.DB, definitionID, threadID string, ep episode, scopeChannel string) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
-	segmentID := uuid.New().String()
+	episodeID := uuid.New().String()
 	now := time.Now().Unix()
 
 	// Thread-based chunking always has a thread_id
 	var channelValue interface{} = nil
 	if scopeChannel != "" {
 		channelValue = scopeChannel
-	} else if seg.channel != "" {
-		channelValue = seg.channel
+	} else if ep.channel != "" {
+		channelValue = ep.channel
 	}
 
-	// Insert segment
+	// Insert episode
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO segments (
+		INSERT INTO episodes (
 			id, definition_id, channel, thread_id,
 			start_time, end_time, event_count,
 			first_event_id, last_event_id, created_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, segmentID, definitionID, channelValue, threadID,
-		seg.startTime, seg.endTime, len(seg.events),
-		seg.events[0].ID, seg.events[len(seg.events)-1].ID, now)
+	`, episodeID, definitionID, channelValue, threadID,
+		ep.startTime, ep.endTime, len(ep.events),
+		ep.events[0].ID, ep.events[len(ep.events)-1].ID, now)
 
 	if err != nil {
-		return fmt.Errorf("failed to insert segment: %w", err)
+		return fmt.Errorf("failed to insert episode: %w", err)
 	}
 
-	// Insert segment_events mappings
-	for position, event := range seg.events {
+	// Insert episode_events mappings
+	for position, event := range ep.events {
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO segment_events (segment_id, event_id, position)
+			INSERT INTO episode_events (episode_id, event_id, position)
 			VALUES (?, ?, ?)
-		`, segmentID, event.ID, position+1) // position is 1-indexed
+		`, episodeID, event.ID, position+1) // position is 1-indexed
 
 		if err != nil {
-			return fmt.Errorf("failed to insert segment_event mapping: %w", err)
+			return fmt.Errorf("failed to insert episode_event mapping: %w", err)
 		}
 	}
 
@@ -495,8 +495,8 @@ type SingleEventConfig struct {
 	SourceAdapter string `json:"source_adapter,omitempty"`
 }
 
-// SingleEventChunker implements single-event segment chunking
-// Each event becomes its own segment.
+// SingleEventChunker implements single-event episode chunking
+// Each event becomes its own episode.
 type SingleEventChunker struct {
 	config SingleEventConfig
 }
@@ -514,7 +514,7 @@ func (c *SingleEventChunker) Chunk(ctx context.Context, db *sql.DB, definitionID
 	// Get definition details
 	var channel string
 	err := db.QueryRowContext(ctx, `
-		SELECT channel FROM segment_definitions WHERE id = ?
+		SELECT channel FROM episode_definitions WHERE id = ?
 	`, definitionID).Scan(&channel)
 	if err != nil {
 		return result, fmt.Errorf("failed to fetch definition: %w", err)
@@ -522,7 +522,7 @@ func (c *SingleEventChunker) Chunk(ctx context.Context, db *sql.DB, definitionID
 
 	existing, err := loadExistingEventIDs(ctx, db, definitionID)
 	if err != nil {
-		return result, fmt.Errorf("failed to load existing segments: %w", err)
+		return result, fmt.Errorf("failed to load existing episodes: %w", err)
 	}
 
 	query := `
@@ -556,24 +556,24 @@ func (c *SingleEventChunker) Chunk(ctx context.Context, db *sql.DB, definitionID
 	}
 	defer tx.Rollback()
 
-	stmtInsertSegment, err := tx.PrepareContext(ctx, `
-		INSERT INTO segments (
+	stmtInsertEpisode, err := tx.PrepareContext(ctx, `
+		INSERT INTO episodes (
 			id, definition_id, channel, thread_id,
 			start_time, end_time, event_count,
 			first_event_id, last_event_id, created_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
-		return result, fmt.Errorf("prepare insert segment: %w", err)
+		return result, fmt.Errorf("prepare insert episode: %w", err)
 	}
-	defer stmtInsertSegment.Close()
+	defer stmtInsertEpisode.Close()
 
 	stmtInsertEvent, err := tx.PrepareContext(ctx, `
-		INSERT INTO segment_events (segment_id, event_id, position)
+		INSERT INTO episode_events (episode_id, event_id, position)
 		VALUES (?, ?, ?)
 	`)
 	if err != nil {
-		return result, fmt.Errorf("prepare insert segment_event: %w", err)
+		return result, fmt.Errorf("prepare insert episode_event: %w", err)
 	}
 	defer stmtInsertEvent.Close()
 
@@ -591,7 +591,7 @@ func (c *SingleEventChunker) Chunk(ctx context.Context, db *sql.DB, definitionID
 			e.ThreadID = threadID.String
 		}
 
-		segmentID := uuid.New().String()
+		episodeID := uuid.New().String()
 		var threadIDValue interface{} = nil
 		if e.ThreadID != "" {
 			threadIDValue = e.ThreadID
@@ -603,8 +603,8 @@ func (c *SingleEventChunker) Chunk(ctx context.Context, db *sql.DB, definitionID
 			channelValue = e.Channel
 		}
 
-		if _, err := stmtInsertSegment.Exec(
-			segmentID,
+		if _, err := stmtInsertEpisode.Exec(
+			episodeID,
 			definitionID,
 			channelValue,
 			threadIDValue,
@@ -615,15 +615,15 @@ func (c *SingleEventChunker) Chunk(ctx context.Context, db *sql.DB, definitionID
 			e.ID,
 			now,
 		); err != nil {
-			return result, fmt.Errorf("insert segment: %w", err)
+			return result, fmt.Errorf("insert episode: %w", err)
 		}
 
-		if _, err := stmtInsertEvent.Exec(segmentID, e.ID, 1); err != nil {
-			return result, fmt.Errorf("insert segment_event: %w", err)
+		if _, err := stmtInsertEvent.Exec(episodeID, e.ID, 1); err != nil {
+			return result, fmt.Errorf("insert episode_event: %w", err)
 		}
 
 		existing[e.ID] = struct{}{}
-		result.SegmentsCreated++
+		result.EpisodesCreated++
 		result.EventsProcessed++
 	}
 	if err := rows.Err(); err != nil {
@@ -631,7 +631,7 @@ func (c *SingleEventChunker) Chunk(ctx context.Context, db *sql.DB, definitionID
 	}
 
 	if err := tx.Commit(); err != nil {
-		return result, fmt.Errorf("commit segments: %w", err)
+		return result, fmt.Errorf("commit episodes: %w", err)
 	}
 
 	result.Duration = time.Since(startTime)
@@ -669,7 +669,7 @@ func (c *TurnPairChunker) Chunk(ctx context.Context, db *sql.DB, definitionID st
 
 	var channel string
 	err := db.QueryRowContext(ctx, `
-		SELECT channel FROM segment_definitions WHERE id = ?
+		SELECT channel FROM episode_definitions WHERE id = ?
 	`, definitionID).Scan(&channel)
 	if err != nil {
 		return result, fmt.Errorf("failed to fetch definition: %w", err)
@@ -677,7 +677,7 @@ func (c *TurnPairChunker) Chunk(ctx context.Context, db *sql.DB, definitionID st
 
 	existing, err := loadExistingEventIDs(ctx, db, definitionID)
 	if err != nil {
-		return result, fmt.Errorf("failed to load existing segments: %w", err)
+		return result, fmt.Errorf("failed to load existing episodes: %w", err)
 	}
 
 	query := `
@@ -722,24 +722,24 @@ func (c *TurnPairChunker) Chunk(ctx context.Context, db *sql.DB, definitionID st
 	}
 	defer tx.Rollback()
 
-	stmtInsertSegment, err := tx.PrepareContext(ctx, `
-		INSERT INTO segments (
+	stmtInsertEpisode, err := tx.PrepareContext(ctx, `
+		INSERT INTO episodes (
 			id, definition_id, channel, thread_id,
 			start_time, end_time, event_count,
 			first_event_id, last_event_id, created_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
-		return result, fmt.Errorf("prepare insert segment: %w", err)
+		return result, fmt.Errorf("prepare insert episode: %w", err)
 	}
-	defer stmtInsertSegment.Close()
+	defer stmtInsertEpisode.Close()
 
 	stmtInsertEvent, err := tx.PrepareContext(ctx, `
-		INSERT INTO segment_events (segment_id, event_id, position)
+		INSERT INTO episode_events (episode_id, event_id, position)
 		VALUES (?, ?, ?)
 	`)
 	if err != nil {
-		return result, fmt.Errorf("prepare insert segment_event: %w", err)
+		return result, fmt.Errorf("prepare insert episode_event: %w", err)
 	}
 	defer stmtInsertEvent.Close()
 
@@ -760,14 +760,14 @@ func (c *TurnPairChunker) Chunk(ctx context.Context, db *sql.DB, definitionID st
 				return nil
 			}
 
-			segmentID := uuid.New().String()
+			episodeID := uuid.New().String()
 			channelValue := interface{}(first.Channel)
 			if channel != "" {
 				channelValue = channel
 			}
 
-			if _, err := stmtInsertSegment.Exec(
-				segmentID,
+			if _, err := stmtInsertEpisode.Exec(
+				episodeID,
 				definitionID,
 				channelValue,
 				threadID,
@@ -778,17 +778,17 @@ func (c *TurnPairChunker) Chunk(ctx context.Context, db *sql.DB, definitionID st
 				current[len(current)-1].ID,
 				now,
 			); err != nil {
-				return fmt.Errorf("insert segment: %w", err)
+				return fmt.Errorf("insert episode: %w", err)
 			}
 
 			for idx, ev := range current {
-				if _, err := stmtInsertEvent.Exec(segmentID, ev.ID, idx+1); err != nil {
-					return fmt.Errorf("insert segment_event: %w", err)
+				if _, err := stmtInsertEvent.Exec(episodeID, ev.ID, idx+1); err != nil {
+					return fmt.Errorf("insert episode_event: %w", err)
 				}
 				existing[ev.ID] = struct{}{}
 			}
 
-			result.SegmentsCreated++
+			result.EpisodesCreated++
 			current = nil
 			return nil
 		}
@@ -822,7 +822,7 @@ func (c *TurnPairChunker) Chunk(ctx context.Context, db *sql.DB, definitionID st
 	}
 
 	if err := tx.Commit(); err != nil {
-		return result, fmt.Errorf("commit segments: %w", err)
+		return result, fmt.Errorf("commit episodes: %w", err)
 	}
 
 	result.Duration = time.Since(startTime)
@@ -833,7 +833,7 @@ func (c *TurnPairChunker) Chunk(ctx context.Context, db *sql.DB, definitionID st
 func GetChunkerForDefinition(ctx context.Context, db *sql.DB, definitionID string) (Chunker, error) {
 	var strategy, configJSON string
 	err := db.QueryRowContext(ctx, `
-		SELECT strategy, config_json FROM segment_definitions WHERE id = ?
+		SELECT strategy, config_json FROM episode_definitions WHERE id = ?
 	`, definitionID).Scan(&strategy, &configJSON)
 
 	if err != nil {
@@ -872,10 +872,10 @@ func GetChunkerForDefinition(ctx context.Context, db *sql.DB, definitionID strin
 
 func loadExistingEventIDs(ctx context.Context, db *sql.DB, definitionID string) (map[string]struct{}, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT se.event_id
-		FROM segment_events se
-		JOIN segments s ON se.segment_id = s.id
-		WHERE s.definition_id = ?
+		SELECT ee.event_id
+		FROM episode_events ee
+		JOIN episodes e ON ee.episode_id = e.id
+		WHERE e.definition_id = ?
 	`, definitionID)
 	if err != nil {
 		return nil, err
@@ -896,11 +896,11 @@ func loadExistingEventIDs(ctx context.Context, db *sql.DB, definitionID string) 
 	return existing, nil
 }
 
-// ListDefinitions lists all segment definitions
+// ListDefinitions lists all episode definitions
 func ListDefinitions(ctx context.Context, db *sql.DB) ([]Definition, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, name, channel, strategy, config_json, description, created_at, updated_at
-		FROM segment_definitions
+		FROM episode_definitions
 		ORDER BY name
 	`)
 	if err != nil {
@@ -928,7 +928,7 @@ func ListDefinitions(ctx context.Context, db *sql.DB) ([]Definition, error) {
 	return definitions, rows.Err()
 }
 
-// Definition represents a segment definition
+// Definition represents an episode definition
 type Definition struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`

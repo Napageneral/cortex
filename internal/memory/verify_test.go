@@ -50,9 +50,10 @@ func setupVerifyTestDB(t *testing.T) *sql.DB {
 			target_type TEXT NOT NULL,
 			target_id TEXT NOT NULL,
 			model TEXT NOT NULL,
-			embedding BLOB NOT NULL,
+			embedding_blob BLOB NOT NULL,
+			dimension INTEGER NOT NULL,
 			source_text_hash TEXT,
-			created_at TEXT DEFAULT (datetime('now')),
+			created_at INTEGER NOT NULL,
 			UNIQUE(target_type, target_id, model)
 		);
 
@@ -114,19 +115,22 @@ func setupVerifyTestDB(t *testing.T) *sql.DB {
 			created_at TEXT DEFAULT (datetime('now'))
 		);
 
-		CREATE TABLE entity_merge_candidates (
+		CREATE TABLE merge_candidates (
 			id TEXT PRIMARY KEY,
-			entity_a_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
-			entity_b_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+			entity_a_id TEXT NOT NULL REFERENCES entities(id),
+			entity_b_id TEXT NOT NULL REFERENCES entities(id),
 			confidence REAL NOT NULL,
-			reason TEXT,
-			context TEXT,
-			matching_facts TEXT,
 			auto_eligible INTEGER DEFAULT 0,
+			reason TEXT NOT NULL,
+			matching_facts TEXT,
+			context TEXT,
+			candidates_considered TEXT,
+			conflicts TEXT,
 			status TEXT DEFAULT 'pending',
-			created_at TEXT DEFAULT (datetime('now')),
+			created_at TEXT NOT NULL,
 			resolved_at TEXT,
 			resolved_by TEXT,
+			resolution_reason TEXT,
 			UNIQUE(entity_a_id, entity_b_id)
 		);
 

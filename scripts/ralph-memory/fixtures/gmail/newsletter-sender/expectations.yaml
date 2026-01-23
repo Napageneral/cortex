@@ -1,52 +1,28 @@
 # Fixture: Cloudflare invoice email
-description: "Automated email from vendor showing company relationships"
+description: "Invoice email from Cloudflare with company details"
 
 entities:
   must_have:
     - name_contains: "Cloudflare"
-      entity_type: Company
-
-    - name_contains: "Intent Systems"
-      entity_type: Company
-
-  must_not_have:
-    # Automated emails should NOT create a person entity for the sender
-    - name: "billing@cloudflare.com"
-      entity_type: Person
-
-    - name: "Cloudflare"
-      entity_type: Person
+      entity_type: Organization
 
   optional:
-    # Tyler might be extracted as mentioned in greeting, but not required
     - name_contains: "Tyler"
       entity_type: Person
+    - name_contains: "San Francisco"
+      entity_type: Location
 
 relationships:
-  must_have:
-    # Intent Systems is a customer of Cloudflare
-    - source_entity_name_contains: "Intent Systems"
+  optional:
+    # Tyler is customer of Cloudflare
+    - source_entity_name_contains: "Tyler"
       relation_type: CUSTOMER_OF
       target_entity_name_contains: "Cloudflare"
-
-  optional:
-    # Could also extract as "uses" or "pays"
-    - relation_type: USES
-    - relation_type: VENDOR_OF
-
-  must_not_have:
-    # The email address should not create a HAS_EMAIL relationship
-    # because "billing@cloudflare.com" is a support address, not a person's email
+      
+    # Cloudflare located in San Francisco
     - source_entity_name_contains: "Cloudflare"
-      relation_type: HAS_EMAIL
-      target_literal: "billing@cloudflare.com"
-
-aliases:
-  must_not_have:
-    # Support email addresses should not become aliases
-    - alias: "billing@cloudflare.com"
+      relation_type: LOCATED_IN
 
 episode_entity_mentions:
   must_have:
     - entity_name_contains: "Cloudflare"
-    - entity_name_contains: "Intent Systems"

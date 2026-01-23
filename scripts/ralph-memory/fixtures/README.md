@@ -90,7 +90,7 @@ relationships:
     # Identity relationships go to aliases, not relationships table
     - relation_type: HAS_EMAIL
       
-mentions:
+episode_relationship_mentions:
   must_have:
     - extracted_fact_contains: "email"
       source_type: self_disclosed

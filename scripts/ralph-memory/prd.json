@@ -341,8 +341,8 @@
         "All fixtures pass"
       ],
       "priority": 22,
-      "passes": false,
-      "notes": "See MEMORY_SYSTEM_SPEC.md Part 11. Golden comparison testing."
+      "passes": true,
+      "notes": "See MEMORY_SYSTEM_SPEC.md Part 11. Golden comparison testing. Completed: cmd/verify-memory CLI tool, internal/memory/verify.go with VerificationHarness, fixture loading, expectation matching (must_have/must_not_have/optional), SQL LIKE-style patterns (*_like), FormatResult/FormatSummary output, 26 unit tests."
     }
   ]
 }

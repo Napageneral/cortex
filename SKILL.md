@@ -59,6 +59,7 @@ cortex people --top 20
 | Command | Description |
 |---------|-------------|
 | `cortex sync` | Sync all enabled adapters |
+| `cortex sync imessage` | Sync specific adapter (positional) |
 | `cortex sync --adapter imessage` | Sync specific adapter |
 | `cortex sync --full` | Force full re-sync |
 

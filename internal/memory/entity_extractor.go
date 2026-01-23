@@ -23,12 +23,19 @@ type EntityExtractionResult struct {
 	ExtractedEntities []ExtractedEntity `json:"extracted_entities"`
 }
 
+// KnownEntity represents an entity we already know about (e.g., thread participant)
+type KnownEntity struct {
+	Name       string `json:"name"`
+	EntityType string `json:"entity_type"`
+}
+
 // EntityExtractionInput contains the input for entity extraction.
 type EntityExtractionInput struct {
-	EpisodeContent   string   // The content of the current episode
-	ReferenceTime    string   // ISO 8601 timestamp for temporal reference (optional)
-	PreviousEpisodes []string // Optional: previous episodes for coreference context
-	CustomInstructions string // Optional: domain-specific extraction guidance
+	EpisodeContent     string        // The content of the current episode
+	ReferenceTime      string        // ISO 8601 timestamp for temporal reference (optional)
+	PreviousEpisodes   []string      // Optional: previous episodes for coreference context
+	KnownEntities      []KnownEntity // Optional: entities we already know are in this context (e.g., thread participants)
+	CustomInstructions string        // Optional: domain-specific extraction guidance
 }
 
 // EntityExtractor extracts entities from episode content using an LLM.
@@ -130,6 +137,16 @@ func (e *EntityExtractor) buildPrompt(input EntityExtractionInput) string {
 	sb.WriteString("<ENTITY_TYPES>\n")
 	sb.WriteString(EntityTypesJSON())
 	sb.WriteString("\n</ENTITY_TYPES>\n\n")
+
+	// Known entities (e.g., thread participants we already know about)
+	if len(input.KnownEntities) > 0 {
+		sb.WriteString("<KNOWN_ENTITIES>\n")
+		sb.WriteString("These entities are already known to be present in this context. Include them in your output if they appear in the content:\n")
+		for _, ke := range input.KnownEntities {
+			sb.WriteString(fmt.Sprintf("- %s (%s)\n", ke.Name, ke.EntityType))
+		}
+		sb.WriteString("</KNOWN_ENTITIES>\n\n")
+	}
 
 	// Previous episodes (for coreference context)
 	if len(input.PreviousEpisodes) > 0 {

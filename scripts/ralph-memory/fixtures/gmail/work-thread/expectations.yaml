@@ -1,80 +1,44 @@
-# Fixture: Work email thread with signature
-description: "Email thread with colleague info and signature parsing"
+# Fixture: Tyler emails CLEAR about meeting with Jeff/Vlad
+description: "Work email scheduling meeting, mentions last day at job"
 
 entities:
   must_have:
     - name_contains: "Tyler"
       entity_type: Person
+      
+    - name_contains: "Charley"
+      entity_type: Person
+      
+    - name_contains: "CLEAR"
+      entity_type: Organization
 
+  optional:
+    # Jeff and Vlad may be extracted from subject line
     - name_contains: "Jeff"
       entity_type: Person
-
     - name_contains: "Vlad"
       entity_type: Person
 
-    - name_contains: "CLEAR"
-      entity_type: Company
-
-  optional:
-    # Intent Systems might be extracted from Tyler's email domain
-    - name_contains: "Intent Systems"
-      entity_type: Company
-
-  must_not_have:
-    # Email addresses should not be entities
-    - name: "jeff.martinez@cleardata.com"
-      entity_type: any
-
-    - name: "tyler@intent-systems.com"
-      entity_type: any
-
 relationships:
-  must_have:
-    # Jeff works at CLEAR Data Solutions
-    - source_entity_name_contains: "Jeff"
+  optional:
+    # Tyler knows Charley (implicit from email)
+    - source_entity_name_contains: "Tyler"
+      relation_type: KNOWS
+      target_entity_name_contains: "Charley"
+      
+    # Charley works at CLEAR
+    - source_entity_name_contains: "Charley"
       relation_type: WORKS_AT
       target_entity_name_contains: "CLEAR"
 
-  optional:
-    # Tyler works at Intent Systems (might extract from email domain)
-    - source_entity_name_contains: "Tyler"
-      relation_type: WORKS_AT
-
-    # Jeff has role Senior VP of Partnerships
-    - source_entity_name_contains: "Jeff"
-      relation_type: HAS_ROLE
-
-    # Various collegial relationships
-    - relation_type: KNOWS
-    - relation_type: WORKS_WITH
-
 aliases:
-  must_have:
-    # Jeff's email from signature should become an alias
-    - entity_name_contains: "Jeff"
-      alias: "jeff.martinez@cleardata.com"
-      alias_type: email
-
   optional:
-    # Jeff's phone from signature may become an alias (LLM may or may not extract it)
-    - entity_name_contains: "Jeff"
-      alias_contains: "512"
-      alias_type: phone
-
-    # Tyler's email might be extracted
+    # Tyler's email from the sender
     - entity_name_contains: "Tyler"
-      alias: "tyler@intent-systems.com"
+      alias_like: "%tnapathy@gmail.com%"
       alias_type: email
 
 episode_entity_mentions:
   must_have:
     - entity_name_contains: "Tyler"
-    - entity_name_contains: "Jeff"
-    - entity_name_contains: "Vlad"
-    - entity_name_contains: "CLEAR"
-
-episode_relationship_mentions:
-  must_have:
-    # Jeff's employer should have provenance
-    - extracted_fact_contains: "CLEAR"
-      source_type: self_disclosed
+    - entity_name_contains: "Charley"

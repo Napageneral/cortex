@@ -108,13 +108,13 @@ func GetPath() (string, error) {
 
 func ensureLegacyColumns(db *sql.DB) error {
 	// Columns added after earlier schema versions.
-	if err := ensureColumn(db, "person_facts", "source_segment_id", "TEXT"); err != nil {
+	if err := ensureColumn(db, "person_facts", "source_episode_id", "TEXT"); err != nil {
 		return err
 	}
-	if err := ensureColumn(db, "unattributed_facts", "source_segment_id", "TEXT REFERENCES segments(id)"); err != nil {
+	if err := ensureColumn(db, "unattributed_facts", "source_episode_id", "TEXT REFERENCES episodes(id)"); err != nil {
 		return err
 	}
-	if err := ensureColumn(db, "candidate_mentions", "source_segment_id", "TEXT REFERENCES segments(id)"); err != nil {
+	if err := ensureColumn(db, "candidate_mentions", "source_episode_id", "TEXT REFERENCES episodes(id)"); err != nil {
 		return err
 	}
 	return nil

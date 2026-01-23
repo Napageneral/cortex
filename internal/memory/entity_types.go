@@ -20,7 +20,7 @@ type EntityType struct {
 var DefaultEntityTypes = []EntityType{
 	{ID: 0, Name: "Entity", Description: "Default/unknown type"},
 	{ID: 1, Name: "Person", Description: "A human being"},
-	{ID: 2, Name: "Company", Description: "Business or organization"},
+	{ID: 2, Name: "Organization", Description: "Company, institution, government, court, school, or group"},
 	{ID: 3, Name: "Project", Description: "A project, product, or codebase"},
 	{ID: 4, Name: "Location", Description: "A place (city, address, venue)"},
 	{ID: 5, Name: "Event", Description: "A meeting, occurrence, or happening"},
@@ -30,14 +30,14 @@ var DefaultEntityTypes = []EntityType{
 
 // Entity type ID constants for convenience
 const (
-	EntityTypeEntity   = 0 // Default/unknown type
-	EntityTypePerson   = 1 // A human being
-	EntityTypeCompany  = 2 // Business or organization
-	EntityTypeProject  = 3 // A project, product, or codebase
-	EntityTypeLocation = 4 // A place (city, address, venue)
-	EntityTypeEvent    = 5 // A meeting, occurrence, or happening
-	EntityTypeDocument = 6 // A file, article, or written work
-	EntityTypePet      = 7 // An animal companion
+	EntityTypeEntity       = 0 // Default/unknown type
+	EntityTypePerson       = 1 // A human being
+	EntityTypeOrganization = 2 // Company, institution, government, court, school
+	EntityTypeProject      = 3 // A project, product, or codebase
+	EntityTypeLocation     = 4 // A place (city, address, venue)
+	EntityTypeEvent        = 5 // A meeting, occurrence, or happening
+	EntityTypeDocument     = 6 // A file, article, or written work
+	EntityTypePet          = 7 // An animal companion
 )
 
 // GetEntityTypeByID returns the EntityType for the given ID, or nil if not found.

@@ -1,23 +1,24 @@
 {
-  "id": "fixture-gmail-newsletter-001",
+  "id": "fixture-gmail-invoice-001",
   "source": "gmail",
-  "channel": "email",
-  "thread_id": "thread_cloudflare_invoice",
-  "reference_time": "2026-01-10T09:15:00Z",
+  "channel": "gmail",
+  "thread_id": "gmail:19bbe137219bab27",
+  "reference_time": "2026-01-14T19:55:02Z",
   "events": [
     {
-      "id": "evt-001",
-      "timestamp": "2026-01-10T09:15:00Z",
+      "id": "gmail:19bbe137219bab27",
+      "timestamp": "2026-01-14T19:55:02Z",
       "sender": "Cloudflare",
-      "sender_identifier": "billing@cloudflare.com",
-      "content": "Your Cloudflare invoice is available\n\nHi Tyler,\n\nYour invoice for January 2026 is now available.\n\nAccount: Intent Systems\nInvoice #: INV-2026-01-CF-7842\nAmount: $127.50\nDue Date: January 25, 2026\n\nView your invoice at: https://dash.cloudflare.com/billing\n\nThank you for using Cloudflare.\n\n--\nCloudflare, Inc.\n101 Townsend St\nSan Francisco, CA 94107",
-      "direction": "inbound",
-      "subject": "Your Cloudflare invoice is available"
+      "sender_identifier": "noreply@notify.cloudflare.com",
+      "recipient": "tnapathy@gmail.com",
+      "subject": "Your Cloudflare invoice is available",
+      "content": "Your Cloudflare invoice for January 2026 is now available.\n\nAccount: Tyler Brandt (tnapathy@gmail.com)\nInvoice Period: January 2026\nService: Cloudflare Pro Plan\n\nView your invoice in the Cloudflare dashboard.\n\nCloudflare, Inc.\n101 Townsend St\nSan Francisco, CA 94107",
+      "direction": "inbound"
     }
   ],
   "metadata": {
-    "description": "Automated invoice email from Cloudflare showing company entity and billing relationship",
-    "coverage_tags": ["newsletter", "company", "invoice", "vendor_relationship", "email"],
-    "notes": "Tests: Company entity extraction (Cloudflare, Intent Systems), CUSTOMER_OF relationship, no person entity for automated sender"
+    "description": "Cloudflare invoice email with company address",
+    "coverage_tags": ["invoice", "company", "vendor", "location"],
+    "notes": "Tests: Company extraction (Cloudflare), Location extraction (San Francisco), CUSTOMER_OF relationship"
   }
 }

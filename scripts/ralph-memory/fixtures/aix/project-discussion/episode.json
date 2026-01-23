@@ -1,46 +1,21 @@
 {
   "id": "fixture-aix-project-001",
-  "source": "aix",
+  "source": "cursor",
   "channel": "cursor",
-  "thread_id": "aix_session_project_nexus",
-  "reference_time": "2026-01-19T16:30:00Z",
+  "thread_id": "cursor:session-memory-planning",
+  "reference_time": "2025-12-15T00:00:00Z",
   "events": [
     {
-      "id": "evt-001",
-      "timestamp": "2026-01-19T16:20:00Z",
+      "id": "cursor:685a3d24-59c5-4fba-923e-e70f6829cc1b",
+      "timestamp": "2025-12-15T00:00:00Z",
       "sender": "Tyler",
-      "sender_identifier": "user",
-      "content": "I started working on Nexus back in January 2025. It's my personal knowledge management system that I've been building alongside my work at Anthropic. Casey has been helping me test it.",
-      "direction": "outbound"
-    },
-    {
-      "id": "evt-002",
-      "timestamp": "2026-01-19T16:22:00Z",
-      "sender": "Claude",
-      "sender_identifier": "assistant",
-      "content": "That's a cool project! A personal knowledge management system sounds useful. What's the tech stack?",
-      "direction": "inbound"
-    },
-    {
-      "id": "evt-003",
-      "timestamp": "2026-01-19T16:25:00Z",
-      "sender": "Tyler",
-      "sender_identifier": "user",
-      "content": "It's built with Go for the backend, SQLite for storage, and I'm using the Gemini API for embeddings and extraction. The project also includes Cortex, which is the core memory engine.",
-      "direction": "outbound"
-    },
-    {
-      "id": "evt-004",
-      "timestamp": "2026-01-19T16:30:00Z",
-      "sender": "Tyler",
-      "sender_identifier": "user",
-      "content": "I've been documenting everything in a spec file at docs/MEMORY_SYSTEM_SPEC.md. Can you help me review the entity resolution algorithm?",
+      "content": "I have an app that has total context about all my imessages, instantly as they come in. And it has total historic knowledge of my chat history across all of my contacts.\n\nI want to develop a feature on top of this context that for every single incoming message, I take some set of context that I know, maybe the last day or 30 days of conversation + some condensed summary of the chat history, and then based on the current conversation offer some suggested prompts/actions for the user to go deeper.\n\nSo like, if me and my girlfriend are wondering where we should go to dinner, I want it to maybe suggest a prompt/action to review places we've talked about going to dinner in the past, then if that action is clicked it will kick off a different agent that will go and execute that.\n\nHowever, the followup action for the agent is outside of scope right now. I only care about reacting to the current conversation + some other context and coming up with 1-3 suggested actions based on that.\n\nWhat context would you include to get good results here?\nHow would you think about this?",
       "direction": "outbound"
     }
   ],
   "metadata": {
-    "description": "User discusses their personal project Nexus and its subcomponent Cortex",
-    "coverage_tags": ["project", "building", "ownership", "collaboration", "document_reference", "aix"],
-    "notes": "Tests: Project entity (Nexus, Cortex), BUILDING/WORKING_ON relationships, STARTED_ON temporal literal, collaboration (Casey testing), Document reference"
+    "description": "Tyler discusses building a memory/context system for iMessage with suggested actions",
+    "coverage_tags": ["project", "ai", "memory_system", "imessage", "context"],
+    "notes": "Tests: Person extraction (Tyler, girlfriend), Project concepts (memory system, context pack), technical discussion"
   }
 }

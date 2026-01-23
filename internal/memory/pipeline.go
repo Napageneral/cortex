@@ -35,12 +35,13 @@ func DefaultPipelineConfig() *PipelineConfig {
 
 // EpisodeInput represents the input episode to process.
 type EpisodeInput struct {
-	ID          string    // Episode UUID
-	Channel     string    // Channel (e.g., "imessage", "gmail", "aix")
-	ThreadID    *string   // Thread ID if applicable
-	Content     string    // The episode content to process
-	StartTime   time.Time // Episode start time (used for contradiction detection)
-	ReferenceTime string  // ISO 8601 timestamp for temporal reference in extraction
+	ID            string        // Episode UUID
+	Channel       string        // Channel (e.g., "imessage", "gmail", "aix")
+	ThreadID      *string       // Thread ID if applicable
+	Content       string        // The episode content to process
+	StartTime     time.Time     // Episode start time (used for contradiction detection)
+	ReferenceTime string        // ISO 8601 timestamp for temporal reference in extraction
+	KnownEntities []KnownEntity // Optional: entities we already know about (e.g., thread participants)
 }
 
 // PipelineResult contains the results of pipeline processing.
@@ -160,6 +161,7 @@ func (p *MemoryPipeline) Process(ctx context.Context, episode EpisodeInput) (*Pi
 		EpisodeContent:     episode.Content,
 		ReferenceTime:      episode.ReferenceTime,
 		PreviousEpisodes:   previousEpisodes,
+		KnownEntities:      episode.KnownEntities,
 		CustomInstructions: p.config.CustomInstructions,
 	}
 

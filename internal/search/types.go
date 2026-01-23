@@ -34,8 +34,8 @@ type DocumentSearchResponse struct {
 	Results       []DocumentSearchResult
 }
 
-// SegmentSearchRequest describes a segment search query.
-type SegmentSearchRequest struct {
+// EpisodeSearchRequest describes an episode search query.
+type EpisodeSearchRequest struct {
 	Query          string
 	QueryEmbedding []float64
 	Channel        string
@@ -46,9 +46,9 @@ type SegmentSearchRequest struct {
 	UseEmbeddings  bool
 }
 
-// SegmentSearchResult represents a segment search match.
-type SegmentSearchResult struct {
-	SegmentID      string
+// EpisodeSearchResult represents an episode search match.
+type EpisodeSearchResult struct {
+	EpisodeID      string
 	DefinitionName string
 	Channel        string
 	ThreadID       string
@@ -59,13 +59,20 @@ type SegmentSearchResult struct {
 	Score          float64
 }
 
-// SegmentSearchResponse groups segment results with diagnostics.
-type SegmentSearchResponse struct {
+// EpisodeSearchResponse groups episode results with diagnostics.
+type EpisodeSearchResponse struct {
 	Query         string
 	Model         string
 	EmbeddingUsed bool
-	Results       []SegmentSearchResult
+	Results       []EpisodeSearchResult
 }
+
+// Backward compatibility aliases for segment -> episode rename
+type (
+	SegmentSearchRequest  = EpisodeSearchRequest
+	SegmentSearchResult   = EpisodeSearchResult
+	SegmentSearchResponse = EpisodeSearchResponse
+)
 
 // Embedder generates vector embeddings for text.
 type Embedder interface {

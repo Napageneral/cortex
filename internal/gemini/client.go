@@ -39,6 +39,14 @@ type Client struct {
 	accessToken     string
 	tokenExpiry     time.Time
 	tokenMu         sync.Mutex
+
+	// Usage tracking
+	usageMu            sync.Mutex
+	totalPromptTokens  int64
+	totalOutputTokens  int64
+	totalEmbedChars    int64
+	generateCalls      int64
+	embedCalls         int64
 }
 
 // NewClient creates a new Gemini client with HTTP/2 pooling and retries
@@ -183,7 +191,15 @@ type Part struct {
 type GenerateContentResponse struct {
 	Candidates     []Candidate     `json:"candidates,omitempty"`
 	PromptFeedback *PromptFeedback `json:"promptFeedback,omitempty"`
+	UsageMetadata  *UsageMetadata  `json:"usageMetadata,omitempty"`
 	Error          *APIError       `json:"error,omitempty"`
+}
+
+// UsageMetadata contains token usage information from the API
+type UsageMetadata struct {
+	PromptTokenCount     int `json:"promptTokenCount"`
+	CandidatesTokenCount int `json:"candidatesTokenCount"`
+	TotalTokenCount      int `json:"totalTokenCount"`
 }
 
 type Candidate struct {
@@ -297,6 +313,9 @@ func (c *Client) GenerateContent(ctx context.Context, model string, req *Generat
 			return nil, result.Error
 		}
 
+		// Record usage for cost tracking
+		c.recordGenerateUsage(result.UsageMetadata)
+
 		return &result, nil
 	}
 
@@ -305,6 +324,12 @@ func (c *Client) GenerateContent(ctx context.Context, model string, req *Generat
 
 // EmbedContent calls the Gemini embedContent API
 func (c *Client) EmbedContent(ctx context.Context, req *EmbedContentRequest) (*EmbedContentResponse, error) {
+	// Calculate character count for cost tracking
+	charCount := 0
+	for _, part := range req.Content.Parts {
+		charCount += len(part.Text)
+	}
+
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -361,6 +386,9 @@ func (c *Client) EmbedContent(ctx context.Context, req *EmbedContentRequest) (*E
 			return nil, result.Error
 		}
 
+		// Record usage for cost tracking
+		c.recordEmbedUsage(charCount)
+
 		return &result, nil
 	}
 
@@ -369,6 +397,14 @@ func (c *Client) EmbedContent(ctx context.Context, req *EmbedContentRequest) (*E
 
 // BatchEmbedContents calls the Gemini batchEmbedContents API for batch embeddings
 func (c *Client) BatchEmbedContents(ctx context.Context, model string, requests []EmbedContentRequest) (*BatchEmbedContentsResponse, error) {
+	// Calculate total character count for cost tracking
+	totalCharCount := 0
+	for _, req := range requests {
+		for _, part := range req.Content.Parts {
+			totalCharCount += len(part.Text)
+		}
+	}
+
 	// Set model in each request (must be fully qualified with models/ prefix)
 	fullModel := "models/" + model
 	for i := range requests {
@@ -435,6 +471,9 @@ func (c *Client) BatchEmbedContents(ctx context.Context, model string, requests 
 			return nil, result.Error
 		}
 
+		// Record usage for cost tracking
+		c.recordEmbedUsage(totalCharCount)
+
 		return &result, nil
 	}
 
@@ -452,4 +491,69 @@ func calculateBackoff(attempt int) time.Duration {
 	}
 	jitter := backoff * 0.25 * (rand.Float64()*2 - 1)
 	return time.Duration(backoff + jitter)
+}
+
+// UsageStats contains accumulated usage statistics
+type UsageStats struct {
+	PromptTokens    int64   `json:"prompt_tokens"`
+	OutputTokens    int64   `json:"output_tokens"`
+	EmbedChars      int64   `json:"embed_chars"`
+	GenerateCalls   int64   `json:"generate_calls"`
+	EmbedCalls      int64   `json:"embed_calls"`
+	EstimatedCostUSD float64 `json:"estimated_cost_usd"`
+}
+
+// GetUsageStats returns accumulated usage statistics and estimated cost
+// Pricing (Gemini 2.0 Flash as of Jan 2026):
+//   - Input: $0.075 per 1M tokens
+//   - Output: $0.30 per 1M tokens
+//   - Embeddings: $0.00001 per 1K characters
+func (c *Client) GetUsageStats() UsageStats {
+	c.usageMu.Lock()
+	defer c.usageMu.Unlock()
+
+	stats := UsageStats{
+		PromptTokens:  c.totalPromptTokens,
+		OutputTokens:  c.totalOutputTokens,
+		EmbedChars:    c.totalEmbedChars,
+		GenerateCalls: c.generateCalls,
+		EmbedCalls:    c.embedCalls,
+	}
+
+	// Calculate cost
+	inputCost := float64(c.totalPromptTokens) * 0.075 / 1_000_000
+	outputCost := float64(c.totalOutputTokens) * 0.30 / 1_000_000
+	embedCost := float64(c.totalEmbedChars) * 0.00001 / 1_000
+	stats.EstimatedCostUSD = inputCost + outputCost + embedCost
+
+	return stats
+}
+
+// ResetUsageStats clears accumulated usage statistics
+func (c *Client) ResetUsageStats() {
+	c.usageMu.Lock()
+	defer c.usageMu.Unlock()
+	c.totalPromptTokens = 0
+	c.totalOutputTokens = 0
+	c.totalEmbedChars = 0
+	c.generateCalls = 0
+	c.embedCalls = 0
+}
+
+func (c *Client) recordGenerateUsage(usage *UsageMetadata) {
+	if usage == nil {
+		return
+	}
+	c.usageMu.Lock()
+	defer c.usageMu.Unlock()
+	c.totalPromptTokens += int64(usage.PromptTokenCount)
+	c.totalOutputTokens += int64(usage.CandidatesTokenCount)
+	c.generateCalls++
+}
+
+func (c *Client) recordEmbedUsage(charCount int) {
+	c.usageMu.Lock()
+	defer c.usageMu.Unlock()
+	c.totalEmbedChars += int64(charCount)
+	c.embedCalls++
 }
