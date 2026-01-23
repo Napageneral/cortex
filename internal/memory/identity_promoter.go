@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -101,6 +102,13 @@ func (p *IdentityPromoter) Promote(ctx context.Context, episodeID string, relati
 // promoteOne promotes a single identity relationship to an alias.
 func (p *IdentityPromoter) promoteOne(ctx context.Context, episodeID, sourceEntityID string, rel ExtractedRelationship, aliasType string) (*PromotedIdentity, error) {
 	targetLiteral := *rel.TargetLiteral
+
+	// Validate phone numbers before promotion
+	if aliasType == "phone" && !isValidPhoneNumber(targetLiteral) {
+		// Reject invalid phone - skip alias creation and episode_relationship_mention
+		return nil, nil
+	}
+
 	normalized := normalizeIdentityValue(targetLiteral, aliasType)
 	now := time.Now().Format(time.RFC3339)
 
@@ -269,4 +277,25 @@ func IsIdentityRelationType(relType string) bool {
 // Returns empty string if not an identity relation.
 func GetAliasTypeForRelation(relType string) string {
 	return IdentityRelationTypes[relType]
+}
+
+// isValidPhoneNumber validates that a phone number has 10-15 digits,
+// allowing leading + and common formatting characters.
+func isValidPhoneNumber(phone string) bool {
+	// Remove formatting characters (spaces, dashes, parentheses, dots)
+	cleaned := regexp.MustCompile(`[\s\-\(\)\.]`).ReplaceAllString(phone, "")
+	
+	// Allow leading + for international format
+	if strings.HasPrefix(cleaned, "+") {
+		cleaned = cleaned[1:]
+	}
+	
+	// Check if remaining string contains only digits
+	if !regexp.MustCompile(`^\d+$`).MatchString(cleaned) {
+		return false
+	}
+	
+	// Validate length: 10-15 digits
+	digitCount := len(cleaned)
+	return digitCount >= 10 && digitCount <= 15
 }

@@ -261,6 +261,11 @@ These relationship types use target_literal instead of target_entity_id:
 | **Identity** | HAS_HANDLE | @username | Yes |
 | **Identity** | HAS_USERNAME | username | Yes |
 | **Identity** | ALSO_KNOWN_AS | Nickname | Yes |
+| **Financial** | HAS_ACCOUNT_NUMBER | account number string | No |
+| **Financial** | HAS_ROUTING_NUMBER | routing number string | No |
+| **Financial** | HAS_COMPENSATION | 280k TC, $150k base | No |
+| **Credentials** | HAS_PASSWORD | password string | No |
+| **Credentials** | HAS_IP_ADDRESS | IP address | No |
 | **Temporal** | BORN_ON | 1990-05-15 | No |
 | **Temporal** | ANNIVERSARY_ON | 2023-02-18 | No |
 | **Temporal** | OCCURRED_ON | 2026-01-22 | No |
@@ -272,6 +277,17 @@ These relationship types use target_literal instead of target_entity_id:
 
 Use REFERENCE_TIME to resolve relative dates ("yesterday", "last month", "next week").
 
+### URL Pattern Recognition
+
+When you see profile URLs, extract the handle as HAS_HANDLE:
+- venmo.com/u/{username} → HAS_HANDLE: @{username}
+- twitter.com/{username} or x.com/{username} → HAS_HANDLE: @{username}
+- instagram.com/{username} → HAS_HANDLE: @{username}
+- github.com/{username} → HAS_HANDLE: @{username}
+- linkedin.com/in/{username} → HAS_HANDLE: {username}
+
+**Important**: If a URL is shared and context suggests it belongs to a mentioned person, associate the handle with THAT person, not create a new entity from the username.
+
 ### target_entity_id Relationships
 
 All other relationships point to entities:
@@ -280,14 +296,21 @@ All other relationships point to entities:
 |----------|-------------------|-------------------|
 | Personal | BORN_IN, LIVES_IN | Location |
 | Personal | HAS_PET | Pet |
-| Professional | WORKS_AT, OWNS, FOUNDED | Company |
+| Professional | WORKS_AT, OWNS, FOUNDED | Company/Organization |
 | Professional | CUSTOMER_OF, USES | Company (vendor/service) |
-| Professional | ATTENDED | Company (school) or Event |
-| Social | KNOWS, FRIEND_OF, SPOUSE_OF, PARENT_OF, DATING | Person |
+| Professional | ATTENDED (school) | Company (school) |
+| Social | KNOWS, FRIEND_OF, SPOUSE_OF, PARENT_OF, CHILD_OF, SIBLING_OF, DATING | Person |
+
+**Direction semantics for hierarchical relationships:**
+- PARENT_OF: source is the parent of target (e.g., "Alice is the parent of Bob" → Alice --PARENT_OF--> Bob)
+- CHILD_OF: source is the child of target (e.g., "Bob is the child of Alice" → Bob --CHILD_OF--> Alice)
+| Legal | SUED_BY, DEFENDANT_IN, PLAINTIFF_IN | Person or Organization |
+| Legal | FILED_BANKRUPTCY_IN | Location (court jurisdiction) |
 | Projects | CREATED, BUILDING, WORKING_ON, CONTRIBUTED_TO | Project |
-| Events | ATTENDED, HOSTED | Event |
+| Events | ATTENDED, HOSTED, SCHEDULED_FOR | Event |
 | Location | LOCATED_IN, VISITED | Location |
 | Content | AUTHORED, REFERENCES | Document |
+| Financial | WIRED_TO, RECEIVED_FROM | Person or Company |
 
 ### Required Fields
 
