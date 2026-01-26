@@ -53,14 +53,24 @@ func (a *IMessageAdapter) Sync(ctx context.Context, cortexDB *sql.DB, full bool)
 		}
 	}
 
-	// Get me person ID if exists
+	// Get me person/contact IDs if exists
 	var mePersonID string
+	var meContactID string
 	_ = cortexDB.QueryRow("SELECT id FROM persons WHERE is_me = 1 LIMIT 1").Scan(&mePersonID)
+	if mePersonID != "" {
+		_ = cortexDB.QueryRow(`
+			SELECT contact_id
+			FROM person_contact_links
+			WHERE person_id = ?
+			ORDER BY confidence DESC, last_seen_at DESC
+			LIMIT 1
+		`, mePersonID).Scan(&meContactID)
+	}
 
 	// Call Eve library directly - no JSON, no CLI, no IPC
 	opts := imessage.SyncOptions{
 		SinceRowID:  sinceRowID,
-		MePersonID:  mePersonID,
+		MeContactID: meContactID,
 		AdapterName: a.Name(),
 		Full:        full,
 	}

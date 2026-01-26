@@ -329,7 +329,7 @@ func TestIdentityPromoter_Promote_SharedAlias(t *testing.T) {
 	insertIdentityTestEntity(t, db, momID, "Mom", 1)
 	insertIdentityTestEpisode(t, db, episodeID, "test-channel")
 
-	phone := "555-1234"
+	phone := "555-123-4567"
 
 	// First, Dad discloses the phone number
 	relationships1 := []ExtractedRelationship{
@@ -337,7 +337,7 @@ func TestIdentityPromoter_Promote_SharedAlias(t *testing.T) {
 			SourceEntityID: 0,
 			RelationType:   "HAS_PHONE",
 			TargetLiteral:  &phone,
-			Fact:           "Dad's phone number is 555-1234",
+			Fact:           "Dad's phone number is 555-123-4567",
 			SourceType:     "self_disclosed",
 		},
 	}
@@ -361,7 +361,7 @@ func TestIdentityPromoter_Promote_SharedAlias(t *testing.T) {
 			SourceEntityID: 0,
 			RelationType:   "HAS_PHONE",
 			TargetLiteral:  &phone,
-			Fact:           "Mom's phone number is 555-1234",
+			Fact:           "Mom's phone number is 555-123-4567",
 			SourceType:     "self_disclosed",
 		},
 	}

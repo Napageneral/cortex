@@ -38,6 +38,8 @@ const (
 	EntityTypeEvent        = 5 // A meeting, occurrence, or happening
 	EntityTypeDocument     = 6 // A file, article, or written work
 	EntityTypePet          = 7 // An animal companion
+	// Deprecated: kept for backward compatibility in tests.
+	EntityTypeCompany = EntityTypeOrganization
 )
 
 // GetEntityTypeByID returns the EntityType for the given ID, or nil if not found.
@@ -54,6 +56,9 @@ func GetEntityTypeByID(id int) *EntityType {
 // or nil if not found.
 func GetEntityTypeByName(name string) *EntityType {
 	nameLower := strings.ToLower(name)
+	if nameLower == "company" {
+		nameLower = "organization"
+	}
 	for i := range DefaultEntityTypes {
 		if strings.ToLower(DefaultEntityTypes[i].Name) == nameLower {
 			return &DefaultEntityTypes[i]

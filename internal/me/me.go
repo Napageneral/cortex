@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Napageneral/cortex/internal/contacts"
 	"github.com/google/uuid"
 )
 
@@ -61,16 +62,17 @@ func GetMePerson(db *sql.DB) (*Person, error) {
 	return &p, nil
 }
 
-// GetIdentities returns all identities for a person
+// GetIdentities returns all contact identifiers for a person.
 func GetIdentities(db *sql.DB, personID string) ([]Identity, error) {
 	rows, err := db.Query(`
-		SELECT id, person_id, channel, identifier, created_at
-		FROM identities
-		WHERE person_id = ?
-		ORDER BY channel, identifier
+		SELECT ci.id, ci.type, ci.value, ci.created_at
+		FROM person_contact_links pcl
+		JOIN contact_identifiers ci ON pcl.contact_id = ci.contact_id
+		WHERE pcl.person_id = ?
+		ORDER BY ci.type, ci.value
 	`, personID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query identities: %w", err)
+		return nil, fmt.Errorf("failed to query contact identifiers: %w", err)
 	}
 	defer rows.Close()
 
@@ -78,9 +80,10 @@ func GetIdentities(db *sql.DB, personID string) ([]Identity, error) {
 	for rows.Next() {
 		var i Identity
 		var createdAt int64
-		if err := rows.Scan(&i.ID, &i.PersonID, &i.Channel, &i.Identifier, &createdAt); err != nil {
-			return nil, fmt.Errorf("failed to scan identity: %w", err)
+		if err := rows.Scan(&i.ID, &i.Channel, &i.Identifier, &createdAt); err != nil {
+			return nil, fmt.Errorf("failed to scan identifier: %w", err)
 		}
+		i.PersonID = personID
 		i.CreatedAt = time.Unix(createdAt, 0)
 		identities = append(identities, i)
 	}
@@ -158,39 +161,12 @@ func AddIdentity(db *sql.DB, channel, identifier string) error {
 		return fmt.Errorf("failed to get me person: %w", err)
 	}
 
-	// Check if identity already exists
-	var existingID string
-	err = tx.QueryRow(`
-		SELECT id FROM identities WHERE channel = ? AND identifier = ?
-	`, channel, identifier).Scan(&existingID)
-
-	if err == nil {
-		// Identity exists - check if it belongs to me
-		var belongsToMe bool
-		err = tx.QueryRow(`
-			SELECT person_id = ? FROM identities WHERE id = ?
-		`, meID, existingID).Scan(&belongsToMe)
-		if err != nil {
-			return fmt.Errorf("failed to check identity ownership: %w", err)
-		}
-		if belongsToMe {
-			// Already belongs to me, nothing to do
-			return tx.Commit()
-		}
-		return fmt.Errorf("identity %s:%s already belongs to another person", channel, identifier)
-	} else if err != sql.ErrNoRows {
-		return fmt.Errorf("failed to check existing identity: %w", err)
-	}
-
-	// Create new identity
-	newID := uuid.New().String()
-	now := time.Now().Unix()
-	_, err = tx.Exec(`
-		INSERT INTO identities (id, person_id, channel, identifier, created_at)
-		VALUES (?, ?, ?, ?, ?)
-	`, newID, meID, channel, identifier, now)
+	contactID, _, err := contacts.GetOrCreateContact(tx, channel, identifier, "", "manual")
 	if err != nil {
-		return fmt.Errorf("failed to create identity: %w", err)
+		return fmt.Errorf("failed to create contact: %w", err)
+	}
+	if err := contacts.EnsurePersonContactLink(tx, meID, contactID, "manual", 1.0); err != nil {
+		return fmt.Errorf("failed to link contact: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {

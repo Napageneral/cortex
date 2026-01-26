@@ -3758,8 +3758,13 @@ The algorithm runs in three phases:
 			// Get all facts
 			facts, _ := identify.GetFactsForPerson(database, personID)
 
-			// Get identities
-			rows, _ := database.Query(`SELECT channel, identifier FROM identities WHERE person_id = ?`, personID)
+			// Get contact identifiers
+			rows, _ := database.Query(`
+				SELECT ci.type, ci.value
+				FROM person_contact_links pcl
+				JOIN contact_identifiers ci ON pcl.contact_id = ci.contact_id
+				WHERE pcl.person_id = ?
+			`, personID)
 			var identities []string
 			if rows != nil {
 				for rows.Next() {
@@ -3772,7 +3777,12 @@ The algorithm runs in three phases:
 
 			// Get event count
 			var eventCount int
-			database.QueryRow(`SELECT COUNT(*) FROM event_participants WHERE person_id = ?`, personID).Scan(&eventCount)
+			database.QueryRow(`
+				SELECT COUNT(DISTINCT ep.event_id)
+				FROM event_participants ep
+				JOIN person_contact_links pcl ON ep.contact_id = pcl.contact_id
+				WHERE pcl.person_id = ?
+			`, personID).Scan(&eventCount)
 
 			// Format output
 			fmt.Println("╭─────────────────────────────────────────╮")
@@ -6516,7 +6526,8 @@ Examples:
 					SELECT DISTINCT c.id FROM segments c
 					JOIN segment_events ce ON c.id = ce.segment_id
 					JOIN event_participants ep ON ce.event_id = ep.event_id
-					JOIN persons p ON ep.person_id = p.id
+					JOIN person_contact_links pcl ON ep.contact_id = pcl.contact_id
+					JOIN persons p ON pcl.person_id = p.id
 					WHERE (p.canonical_name LIKE ? OR p.display_name LIKE ?)
 					AND NOT EXISTS (
 						SELECT 1 FROM analysis_runs ar
@@ -7591,11 +7602,17 @@ func cosineSimilarity(a, b []float64) float64 {
 // getEpisodePreview returns a text preview of an episode
 func getEpisodePreview(ctx context.Context, database *sql.DB, episodeID string, maxLen int) (string, error) {
 	rows, err := database.QueryContext(ctx, `
-		SELECT e.content, p.canonical_name
+		SELECT e.content, COALESCE(p.canonical_name, c.display_name)
 		FROM episode_events ee
 		JOIN events e ON ee.event_id = e.id
 		LEFT JOIN event_participants ep ON e.id = ep.event_id AND ep.role = 'sender'
-		LEFT JOIN persons p ON ep.person_id = p.id
+		LEFT JOIN contacts c ON ep.contact_id = c.id
+		LEFT JOIN persons p ON p.id = (
+			SELECT person_id FROM person_contact_links pcl
+			WHERE pcl.contact_id = ep.contact_id
+			ORDER BY confidence DESC, last_seen_at DESC
+			LIMIT 1
+		)
 		WHERE ee.episode_id = ?
 		ORDER BY ee.position
 		LIMIT 5

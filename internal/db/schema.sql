@@ -68,7 +68,46 @@ CREATE TABLE IF NOT EXISTS persons (
 CREATE INDEX IF NOT EXISTS idx_persons_is_me ON persons(is_me);
 CREATE INDEX IF NOT EXISTS idx_persons_canonical_name ON persons(canonical_name);
 
--- Identities: Identifiers (phone, email, handle) linked to persons
+-- Contacts: Communication endpoints (phone/email/handle/device)
+CREATE TABLE IF NOT EXISTS contacts (
+    id TEXT PRIMARY KEY,
+    display_name TEXT,
+    source TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_contacts_display_name ON contacts(display_name);
+
+CREATE TABLE IF NOT EXISTS contact_identifiers (
+    id TEXT PRIMARY KEY,
+    contact_id TEXT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+    type TEXT NOT NULL,         -- phone/email/handle/device/human/ai
+    value TEXT NOT NULL,        -- raw value
+    normalized TEXT NOT NULL,   -- canonical form for dedupe
+    created_at INTEGER NOT NULL,
+    last_seen_at INTEGER,
+    UNIQUE(type, normalized)
+);
+
+CREATE INDEX IF NOT EXISTS idx_contact_identifiers_contact ON contact_identifiers(contact_id);
+CREATE INDEX IF NOT EXISTS idx_contact_identifiers_lookup ON contact_identifiers(type, normalized);
+
+CREATE TABLE IF NOT EXISTS person_contact_links (
+    id TEXT PRIMARY KEY,
+    person_id TEXT NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+    contact_id TEXT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+    confidence REAL DEFAULT 1.0,
+    source_type TEXT,
+    first_seen_at INTEGER,
+    last_seen_at INTEGER,
+    UNIQUE(person_id, contact_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_person_contact_links_person ON person_contact_links(person_id);
+CREATE INDEX IF NOT EXISTS idx_person_contact_links_contact ON person_contact_links(contact_id);
+
+-- Identities: legacy identifiers linked to persons (deprecated)
 CREATE TABLE IF NOT EXISTS identities (
     id TEXT PRIMARY KEY,
     person_id TEXT NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
@@ -84,13 +123,12 @@ CREATE INDEX IF NOT EXISTS idx_identities_identifier ON identities(channel, iden
 -- Event Participants: Who was involved in each event
 CREATE TABLE IF NOT EXISTS event_participants (
     event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-    person_id TEXT NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+    contact_id TEXT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
     role TEXT NOT NULL,  -- sender, recipient, cc, observer
-    PRIMARY KEY (event_id, person_id, role)
+    PRIMARY KEY (event_id, contact_id, role)
 );
 
 CREATE INDEX IF NOT EXISTS idx_event_participants_event ON event_participants(event_id);
-CREATE INDEX IF NOT EXISTS idx_event_participants_person ON event_participants(person_id);
 
 -- Event state: Channel-agnostic mutable state for messages
 CREATE TABLE IF NOT EXISTS event_state (

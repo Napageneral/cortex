@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Napageneral/cortex/internal/contacts"
 	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 )
@@ -121,7 +122,7 @@ func (e *EveAdapter) Sync(ctx context.Context, cortexDB *sql.DB, full bool) (Syn
 
 	// Sync contacts first (to establish person/identity mappings)
 	contactsStart := time.Now()
-	personsCreated, contactMap, mePersonID, perfContacts, err := e.syncContacts(ctx, eveDB, cortexDB)
+	personsCreated, contactMap, meContactID, perfContacts, err := e.syncContacts(ctx, eveDB, cortexDB)
 	if err != nil {
 		return result, fmt.Errorf("failed to sync contacts: %w", err)
 	}
@@ -149,7 +150,7 @@ func (e *EveAdapter) Sync(ctx context.Context, cortexDB *sql.DB, full bool) (Syn
 
 	// Sync messages
 	messagesStart := time.Now()
-	eventsCreated, eventsUpdated, maxImportedTimestamp, perfMessages, err := e.syncMessages(ctx, eveDB, cortexDB, lastSyncTimestamp, contactMap, mePersonID)
+	eventsCreated, eventsUpdated, maxImportedTimestamp, perfMessages, err := e.syncMessages(ctx, eveDB, cortexDB, lastSyncTimestamp, contactMap, meContactID)
 	if err != nil {
 		return result, fmt.Errorf("failed to sync messages: %w", err)
 	}
@@ -175,7 +176,7 @@ func (e *EveAdapter) Sync(ctx context.Context, cortexDB *sql.DB, full bool) (Syn
 
 	// Sync reactions
 	reactionsStart := time.Now()
-	reactionsCreated, reactionsUpdated, perfReactions, err := e.syncReactions(ctx, eveDB, cortexDB, lastSyncTimestamp, contactMap, mePersonID)
+	reactionsCreated, reactionsUpdated, perfReactions, err := e.syncReactions(ctx, eveDB, cortexDB, lastSyncTimestamp, contactMap, meContactID)
 	if err != nil {
 		return result, fmt.Errorf("failed to sync reactions: %w", err)
 	}
@@ -210,8 +211,8 @@ func (e *EveAdapter) Sync(ctx context.Context, cortexDB *sql.DB, full bool) (Syn
 	return result, nil
 }
 
-// syncContacts syncs Eve contacts to cortex persons and identities
-func (e *EveAdapter) syncContacts(ctx context.Context, eveDB, cortexDB *sql.DB) (personsCreated int, contactMap map[int64]string, mePersonID string, perf map[string]string, err error) {
+// syncContacts syncs Eve contacts to cortex contacts and person links.
+func (e *EveAdapter) syncContacts(ctx context.Context, eveDB, cortexDB *sql.DB) (personsCreated int, contactMap map[int64]string, meContactID string, perf map[string]string, err error) {
 	perf = map[string]string{}
 
 	// Seed "me" from Eve's rich whoami info (authoritative identity set: phones/emails/handles).
@@ -221,7 +222,7 @@ func (e *EveAdapter) syncContacts(ctx context.Context, eveDB, cortexDB *sql.DB) 
 	if err != nil {
 		return 0, nil, "", perf, err
 	}
-	mePersonID = meID
+	meContactID = meID
 	perf["whoami"] = time.Since(wStart).String()
 
 	// Query contacts and their identifiers from Eve
@@ -239,127 +240,98 @@ func (e *EveAdapter) syncContacts(ctx context.Context, eveDB, cortexDB *sql.DB) 
 		ORDER BY c.id
 	`)
 	if err != nil {
-		return meCreated, nil, mePersonID, perf, fmt.Errorf("failed to query Eve contacts: %w", err)
+		return meCreated, nil, meContactID, perf, fmt.Errorf("failed to query Eve contacts: %w", err)
 	}
 	defer rows.Close()
 	perf["query"] = time.Since(qStart).String()
 
 	personsCreated = meCreated
-	contactMap = make(map[int64]string) // Eve contact_id -> cortex person_id
+	contactMap = make(map[int64]string) // Eve contact_id -> cortex contact_id
 
 	// Bulk write in a single transaction for SQLite performance.
 	txStart := time.Now()
 	tx, err := cortexDB.Begin()
 	if err != nil {
-		return personsCreated, contactMap, mePersonID, perf, fmt.Errorf("begin cortex tx: %w", err)
+		return personsCreated, contactMap, meContactID, perf, fmt.Errorf("begin cortex tx: %w", err)
 	}
 	defer tx.Rollback()
 
-	stmtInsertPerson, err := tx.Prepare(`
-		INSERT INTO persons (id, canonical_name, is_me, created_at, updated_at)
-		VALUES (?, ?, 0, ?, ?)
-	`)
-	if err != nil {
-		return personsCreated, contactMap, mePersonID, perf, fmt.Errorf("prepare insert person: %w", err)
-	}
-	defer stmtInsertPerson.Close()
-
-	stmtInsertIdentity, err := tx.Prepare(`
-		INSERT INTO identities (id, person_id, channel, identifier, created_at)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(channel, identifier) DO NOTHING
-	`)
-	if err != nil {
-		return personsCreated, contactMap, mePersonID, perf, fmt.Errorf("prepare insert identity: %w", err)
-	}
-	defer stmtInsertIdentity.Close()
-
-		for rows.Next() {
+	for rows.Next() {
 		var eveContactID int64
 		var name, nickname sql.NullString
 		var identifier, identifierType sql.NullString
 
 		if err := rows.Scan(&eveContactID, &name, &nickname, &identifier, &identifierType); err != nil {
-			return personsCreated, contactMap, mePersonID, perf, fmt.Errorf("failed to scan contact row: %w", err)
+			return personsCreated, contactMap, meContactID, perf, fmt.Errorf("failed to scan contact row: %w", err)
 		}
 
-		// Determine canonical name - never fall back to phone identifiers
-		canonicalName := "Unknown Contact"
+		// Determine display name - never fall back to phone identifiers.
+		displayName := "Unknown Contact"
 		if name.Valid && name.String != "" {
-			canonicalName = name.String
+			displayName = name.String
 		} else if nickname.Valid && nickname.String != "" {
-			canonicalName = nickname.String
-		}
-		// Explicitly do NOT fall back to identifier - use "Unknown Contact" instead
-
-		// FIXED: First check if we already have a person for this Eve contact_id
-		// This handles contacts with multiple identifiers (phone + email)
-		var personID string
-		if existingPersonID, ok := contactMap[eveContactID]; ok {
-			personID = existingPersonID
-		} else if identifier.Valid && identifierType.Valid {
-			// Try to find person by identifier (normalize phone numbers to Eve format)
-			lookupIdent := identifier.String
-			if identifierType.String == "phone" {
-				lookupIdent = normalizePhoneEve(lookupIdent)
-			}
-			// Note: Use tx.QueryRow to avoid deadlock - SQLite doesn't allow concurrent access
-			row := tx.QueryRow(`
-				SELECT person_id FROM identities
-				WHERE channel = ? AND identifier = ?
-			`, identifierType.String, lookupIdent)
-			if err := row.Scan(&personID); err != nil && err != sql.ErrNoRows {
-				return personsCreated, contactMap, mePersonID, perf, fmt.Errorf("failed to query identity: %w", err)
-			}
+			displayName = nickname.String
 		}
 
-		// If not found, create new person
-		if personID == "" {
-			personID = uuid.New().String()
-			now := time.Now().Unix()
+		contactID, ok := contactMap[eveContactID]
+		if !ok {
+			if identifier.Valid && identifierType.Valid {
+				var err error
+				contactID, _, err = contacts.GetOrCreateContact(tx, identifierType.String, identifier.String, displayName, e.Name())
+				if err != nil {
+					return personsCreated, contactMap, meContactID, perf, fmt.Errorf("create contact: %w", err)
+				}
+			} else {
+				contactID = uuid.New().String()
+				now := time.Now().Unix()
+				if _, err := tx.Exec(`
+					INSERT INTO contacts (id, display_name, source, created_at, updated_at)
+					VALUES (?, ?, ?, ?, ?)
+				`, contactID, displayName, e.Name(), now, now); err != nil {
+					return personsCreated, contactMap, meContactID, perf, fmt.Errorf("insert contact: %w", err)
+				}
+			}
+			contactMap[eveContactID] = contactID
+		}
 
-			// Best-effort: if insert fails due to uniqueness collisions on identities, we still map this contact_id.
-			if _, err := stmtInsertPerson.Exec(personID, canonicalName, now, now); err == nil {
+		if identifier.Valid && identifierType.Valid {
+			if err := contacts.EnsureContactIdentifier(tx, contactID, identifierType.String, identifier.String); err != nil {
+				return personsCreated, contactMap, meContactID, perf, fmt.Errorf("attach contact identifier: %w", err)
+			}
+		}
+
+		if contacts.IsMeaningfulPersonName(displayName) {
+			if _, created, err := contacts.EnsurePersonForContact(tx, contactID, displayName, "deterministic", 1.0); err != nil {
+				return personsCreated, contactMap, meContactID, perf, fmt.Errorf("link contact person: %w", err)
+			} else if created {
 				personsCreated++
 			}
-		}
-
-		contactMap[eveContactID] = personID
-
-		// Add identity if we have an identifier
-		if identifier.Valid && identifierType.Valid {
-			identityID := uuid.New().String()
-			now := time.Now().Unix()
-
-			// Normalize phone numbers to Eve format for consistent matching
-			ident := identifier.String
-			if identifierType.String == "phone" {
-				ident = normalizePhoneEve(ident)
-			}
-			_, _ = stmtInsertIdentity.Exec(identityID, personID, identifierType.String, ident, now)
 		}
 	}
 
 	if err := rows.Err(); err != nil {
-		return personsCreated, contactMap, mePersonID, perf, err
+		return personsCreated, contactMap, meContactID, perf, err
 	}
 	if err := tx.Commit(); err != nil {
-		return personsCreated, contactMap, mePersonID, perf, fmt.Errorf("commit cortex tx: %w", err)
+		return personsCreated, contactMap, meContactID, perf, fmt.Errorf("commit cortex tx: %w", err)
 	}
 	perf["tx_commit"] = time.Since(txStart).String()
-	return personsCreated, contactMap, mePersonID, perf, nil
+	return personsCreated, contactMap, meContactID, perf, nil
 }
 
-func (e *EveAdapter) syncWhoami(ctx context.Context, eveDB, cortexDB *sql.DB) (personsCreated int, mePersonID string, err error) {
+func (e *EveAdapter) syncWhoami(ctx context.Context, eveDB, cortexDB *sql.DB) (personsCreated int, meContactID string, err error) {
 	type whoamiJSON struct {
 		OK     bool     `json:"ok"`
 		Name   string   `json:"name"`
 		Emails []string `json:"emails"`
 		Phones []string `json:"phones"`
 	}
+	type ident struct {
+		typ   string
+		value string
+	}
 
 	findEveBin := func() (string, bool) {
-		// Explicit override (best for testing + portability).
 		if p := os.Getenv("CORTEX_EVE_BIN"); p != "" {
 			return p, true
 		}
@@ -369,13 +341,9 @@ func (e *EveAdapter) syncWhoami(ctx context.Context, eveDB, cortexDB *sql.DB) (p
 		if p := os.Getenv("EVE_BIN"); p != "" {
 			return p, true
 		}
-
-		// Normal PATH lookup.
 		if p, err := exec.LookPath("eve"); err == nil {
 			return p, true
 		}
-
-		// Common dev locations in this Nexus workspace.
 		home, err := os.UserHomeDir()
 		if err == nil {
 			candidates := []string{
@@ -388,84 +356,82 @@ func (e *EveAdapter) syncWhoami(ctx context.Context, eveDB, cortexDB *sql.DB) (p
 				}
 			}
 		}
-
 		return "", false
 	}
 
-	// Prefer the Eve CLI `whoami` output (this is what the user sees and is the richest signal).
-	// If the `eve` binary is not available, fall back to any warehouse representation (if present).
+	upsertMe := func(bestName string, idents []ident) (int, string, error) {
+		bestName = strings.TrimSpace(bestName)
+		if bestName == "" {
+			bestName = "Me"
+		}
+		var mePersonID string
+		_ = cortexDB.QueryRow("SELECT id FROM persons WHERE is_me = 1 LIMIT 1").Scan(&mePersonID)
+		now := time.Now().Unix()
+		if mePersonID == "" {
+			mePersonID = uuid.New().String()
+			if _, err := cortexDB.Exec(`
+				INSERT INTO persons (id, canonical_name, is_me, created_at, updated_at)
+				VALUES (?, ?, 1, ?, ?)
+			`, mePersonID, bestName, now, now); err != nil {
+				return 0, "", fmt.Errorf("failed to create me person: %w", err)
+			}
+			personsCreated++
+		} else {
+			_, _ = cortexDB.Exec(
+				`UPDATE persons SET canonical_name = ?, updated_at = ? WHERE id = ? AND (canonical_name = '' OR canonical_name = 'Me' OR canonical_name = 'Unknown')`,
+				bestName, now, mePersonID,
+			)
+		}
+
+		if len(idents) > 0 {
+			contactID, _, err := contacts.GetOrCreateContact(cortexDB, idents[0].typ, idents[0].value, bestName, e.Name())
+			if err != nil {
+				return personsCreated, "", err
+			}
+			meContactID = contactID
+			for _, it := range idents {
+				if err := contacts.EnsureContactIdentifier(cortexDB, contactID, it.typ, it.value); err != nil {
+					return personsCreated, "", err
+				}
+			}
+		} else {
+			contactID := uuid.New().String()
+			if _, err := cortexDB.Exec(`
+				INSERT INTO contacts (id, display_name, source, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?)
+			`, contactID, bestName, e.Name(), now, now); err != nil {
+				return personsCreated, "", fmt.Errorf("failed to create me contact: %w", err)
+			}
+			meContactID = contactID
+		}
+
+		if mePersonID != "" && meContactID != "" {
+			_ = contacts.EnsurePersonContactLink(cortexDB, mePersonID, meContactID, "deterministic", 1.0)
+		}
+		return personsCreated, meContactID, nil
+	}
+
 	if evePath, ok := findEveBin(); ok {
 		cmd := exec.CommandContext(ctx, evePath, "whoami")
 		out, runErr := cmd.Output()
-		if runErr != nil {
-			return 0, "", fmt.Errorf("failed to run `eve whoami` for seeding me: %w", runErr)
-		}
-		var w whoamiJSON
-		if err := json.Unmarshal(out, &w); err != nil {
-			return 0, "", fmt.Errorf("failed to parse `eve whoami` output: %w", err)
-		}
-		if w.OK {
-			now := time.Now().Unix()
-
-			// Find or create the cortex "me" person.
-			_ = cortexDB.QueryRow("SELECT id FROM persons WHERE is_me = 1 LIMIT 1").Scan(&mePersonID)
-
-			bestName := w.Name
-			if bestName == "" {
-				bestName = "Me"
+		if runErr == nil && len(out) > 0 {
+			var w whoamiJSON
+			if err := json.Unmarshal(out, &w); err == nil && w.OK {
+				idents := make([]ident, 0, len(w.Emails)+len(w.Phones))
+				for _, p := range w.Phones {
+					if strings.TrimSpace(p) != "" {
+						idents = append(idents, ident{typ: "phone", value: p})
+					}
+				}
+				for _, em := range w.Emails {
+					if strings.TrimSpace(em) != "" {
+						idents = append(idents, ident{typ: "email", value: em})
+					}
+				}
+				return upsertMe(w.Name, idents)
 			}
-
-			if mePersonID == "" {
-				mePersonID = uuid.New().String()
-				if _, err := cortexDB.Exec(`
-					INSERT INTO persons (id, canonical_name, is_me, created_at, updated_at)
-					VALUES (?, ?, 1, ?, ?)
-				`, mePersonID, bestName, now, now); err != nil {
-					return 0, "", fmt.Errorf("failed to create me person: %w", err)
-				}
-				personsCreated++
-			} else {
-				// Best-effort: keep canonical_name fresh if it was a placeholder.
-				_, _ = cortexDB.Exec(
-					`UPDATE persons SET canonical_name = ?, updated_at = ? WHERE id = ? AND (canonical_name = '' OR canonical_name = 'Me' OR canonical_name = 'Unknown')`,
-					bestName, now, mePersonID,
-				)
-			}
-
-			// Upsert phone/email identities onto the cortex me person.
-			for _, p := range w.Phones {
-				if p == "" {
-					continue
-				}
-				identityID := uuid.New().String()
-				if _, err := cortexDB.Exec(`
-					INSERT INTO identities (id, person_id, channel, identifier, created_at)
-					VALUES (?, ?, ?, ?, ?)
-					ON CONFLICT(channel, identifier) DO UPDATE SET person_id = excluded.person_id
-				`, identityID, mePersonID, "phone", p, now); err != nil {
-					return personsCreated, mePersonID, fmt.Errorf("failed to upsert whoami phone identity: %w", err)
-				}
-			}
-			for _, em := range w.Emails {
-				if em == "" {
-					continue
-				}
-				identityID := uuid.New().String()
-				if _, err := cortexDB.Exec(`
-					INSERT INTO identities (id, person_id, channel, identifier, created_at)
-					VALUES (?, ?, ?, ?, ?)
-					ON CONFLICT(channel, identifier) DO UPDATE SET person_id = excluded.person_id
-				`, identityID, mePersonID, "email", em, now); err != nil {
-					return personsCreated, mePersonID, fmt.Errorf("failed to upsert whoami email identity: %w", err)
-				}
-			}
-
-			return personsCreated, mePersonID, nil
 		}
 	}
-
-	// Find or create the cortex "me" person.
-	_ = cortexDB.QueryRow("SELECT id FROM persons WHERE is_me = 1 LIMIT 1").Scan(&mePersonID)
 
 	rows, err := eveDB.Query(`
 		SELECT
@@ -483,24 +449,13 @@ func (e *EveAdapter) syncWhoami(ctx context.Context, eveDB, cortexDB *sql.DB) (p
 	}
 	defer rows.Close()
 
-	var (
-		bestName        string
-		identifiersSeen bool
-	)
-
-	type ident struct {
-		channel    string
-		identifier string
-	}
-	var idents []ident
-
+	bestName := ""
+	idents := make([]ident, 0)
 	for rows.Next() {
 		var name, nickname, identifier, identifierType sql.NullString
 		if err := rows.Scan(&name, &nickname, &identifier, &identifierType); err != nil {
 			return 0, "", fmt.Errorf("failed to scan Eve whoami row: %w", err)
 		}
-
-		// Determine best canonical name candidate.
 		if bestName == "" {
 			if name.Valid && name.String != "" {
 				bestName = name.String
@@ -508,58 +463,17 @@ func (e *EveAdapter) syncWhoami(ctx context.Context, eveDB, cortexDB *sql.DB) (p
 				bestName = nickname.String
 			}
 		}
-
-		if identifier.Valid && identifierType.Valid && identifier.String != "" && identifierType.String != "" {
-			identifiersSeen = true
-			idents = append(idents, ident{
-				channel:    identifierType.String,
-				identifier: identifier.String,
-			})
+		if identifier.Valid && identifierType.Valid && strings.TrimSpace(identifier.String) != "" {
+			idents = append(idents, ident{typ: identifierType.String, value: identifier.String})
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return 0, "", fmt.Errorf("error iterating Eve whoami: %w", err)
 	}
-
-	// If Eve has no whoami rows, do nothing.
-	if bestName == "" && !identifiersSeen {
+	if bestName == "" && len(idents) == 0 {
 		return 0, "", nil
 	}
-	if bestName == "" {
-		bestName = "Me"
-	}
-
-	now := time.Now().Unix()
-	if mePersonID == "" {
-		mePersonID = uuid.New().String()
-		if _, err := cortexDB.Exec(`
-			INSERT INTO persons (id, canonical_name, is_me, created_at, updated_at)
-			VALUES (?, ?, 1, ?, ?)
-		`, mePersonID, bestName, now, now); err != nil {
-			return 0, "", fmt.Errorf("failed to create me person: %w", err)
-		}
-		personsCreated++
-	} else {
-		// Best-effort: keep canonical_name fresh if it was a placeholder.
-		_, _ = cortexDB.Exec(`UPDATE persons SET canonical_name = ?, updated_at = ? WHERE id = ? AND (canonical_name = '' OR canonical_name = 'Me' OR canonical_name = 'Unknown')`,
-			bestName, now, mePersonID,
-		)
-	}
-
-	// Upsert all whoami identifiers onto the cortex me person.
-	for _, it := range idents {
-		identityID := uuid.New().String()
-		_, err := cortexDB.Exec(`
-			INSERT INTO identities (id, person_id, channel, identifier, created_at)
-			VALUES (?, ?, ?, ?, ?)
-			ON CONFLICT(channel, identifier) DO UPDATE SET person_id = excluded.person_id
-		`, identityID, mePersonID, it.channel, it.identifier, now)
-		if err != nil {
-			return personsCreated, mePersonID, fmt.Errorf("failed to upsert whoami identity (%s:%s): %w", it.channel, it.identifier, err)
-		}
-	}
-
-	return personsCreated, mePersonID, nil
+	return upsertMe(bestName, idents)
 }
 
 // syncChats syncs Eve chats to cortex threads
@@ -670,7 +584,7 @@ func (e *EveAdapter) syncChats(ctx context.Context, eveDB, cortexDB *sql.DB) (th
 }
 
 // syncMessages syncs Eve messages to cortex events
-func (e *EveAdapter) syncMessages(ctx context.Context, eveDB, cortexDB *sql.DB, lastSyncTimestamp int64, contactMap map[int64]string, mePersonID string) (created int, updated int, maxImportedTimestamp int64, perf map[string]string, err error) {
+func (e *EveAdapter) syncMessages(ctx context.Context, eveDB, cortexDB *sql.DB, lastSyncTimestamp int64, contactMap map[int64]string, meContactID string) (created int, updated int, maxImportedTimestamp int64, perf map[string]string, err error) {
 	_ = ctx
 	perf = map[string]string{}
 
@@ -749,7 +663,7 @@ func (e *EveAdapter) syncMessages(ctx context.Context, eveDB, cortexDB *sql.DB, 
 	defer stmtUpdateEvent.Close()
 
 	stmtInsertParticipant, err := tx.Prepare(`
-		INSERT OR IGNORE INTO event_participants (event_id, person_id, role)
+		INSERT OR IGNORE INTO event_participants (event_id, contact_id, role)
 		VALUES (?, ?, ?)
 	`)
 	if err != nil {
@@ -821,16 +735,16 @@ func (e *EveAdapter) syncMessages(ctx context.Context, eveDB, cortexDB *sql.DB, 
 
 		// Participants: use in-memory contactMap from syncContacts to avoid per-message DB lookups.
 		if senderID.Valid {
-			if pid, ok := contactMap[senderID.Int64]; ok && pid != "" {
+			if contactID, ok := contactMap[senderID.Int64]; ok && contactID != "" {
 				role := "sender"
 				if isFromMe {
 					role = "recipient"
 				}
-				_, _ = stmtInsertParticipant.Exec(eventID, pid, role)
+				_, _ = stmtInsertParticipant.Exec(eventID, contactID, role)
 			}
 		}
-		if isFromMe && mePersonID != "" {
-			_, _ = stmtInsertParticipant.Exec(eventID, mePersonID, "sender")
+		if isFromMe && meContactID != "" {
+			_, _ = stmtInsertParticipant.Exec(eventID, meContactID, "sender")
 		}
 	}
 
@@ -985,7 +899,7 @@ func (e *EveAdapter) syncAttachments(ctx context.Context, eveDB, cortexDB *sql.D
 }
 
 // syncReactions syncs Eve reactions to cortex events
-func (e *EveAdapter) syncReactions(ctx context.Context, eveDB, cortexDB *sql.DB, lastSyncTimestamp int64, contactMap map[int64]string, mePersonID string) (created int, updated int, perf map[string]string, err error) {
+func (e *EveAdapter) syncReactions(ctx context.Context, eveDB, cortexDB *sql.DB, lastSyncTimestamp int64, contactMap map[int64]string, meContactID string) (created int, updated int, perf map[string]string, err error) {
 	_ = ctx
 	perf = map[string]string{}
 
@@ -1059,7 +973,7 @@ func (e *EveAdapter) syncReactions(ctx context.Context, eveDB, cortexDB *sql.DB,
 	defer stmtUpdateEvent.Close()
 
 	stmtInsertParticipant, err := tx.Prepare(`
-		INSERT OR IGNORE INTO event_participants (event_id, person_id, role)
+		INSERT OR IGNORE INTO event_participants (event_id, contact_id, role)
 		VALUES (?, ?, ?)
 	`)
 	if err != nil {
@@ -1120,12 +1034,12 @@ func (e *EveAdapter) syncReactions(ctx context.Context, eveDB, cortexDB *sql.DB,
 
 		// Participants: use in-memory contactMap from syncContacts to avoid per-reaction DB lookups
 		if senderID.Valid {
-			if pid, ok := contactMap[senderID.Int64]; ok && pid != "" {
-				_, _ = stmtInsertParticipant.Exec(eventID, pid, "sender")
+			if contactID, ok := contactMap[senderID.Int64]; ok && contactID != "" {
+				_, _ = stmtInsertParticipant.Exec(eventID, contactID, "sender")
 			}
 		}
-		if isFromMe && mePersonID != "" {
-			_, _ = stmtInsertParticipant.Exec(eventID, mePersonID, "sender")
+		if isFromMe && meContactID != "" {
+			_, _ = stmtInsertParticipant.Exec(eventID, meContactID, "sender")
 		}
 	}
 

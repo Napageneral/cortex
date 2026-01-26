@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/Napageneral/cortex/internal/contacts"
 	_ "modernc.org/sqlite"
 )
 
@@ -98,15 +98,14 @@ func (a *AixAdapter) Sync(ctx context.Context, cortexDB *sql.DB, full bool) (Syn
 	var mePersonID string
 	_ = cortexDB.QueryRow("SELECT id FROM persons WHERE is_me = 1 LIMIT 1").Scan(&mePersonID)
 
-	// Ensure "me" has an identity that indicates presence on this source (helps cross-platform views).
-	if mePersonID != "" {
-		if err := a.ensureMeIdentity(cortexDB, mePersonID); err != nil {
-			return result, err
-		}
+	// Ensure "me" has a contact endpoint for this source.
+	meContactID, err := a.ensureMeContact(cortexDB, mePersonID)
+	if err != nil {
+		return result, err
 	}
 
-	// Cache AI persons per model to avoid repeated DB round-trips.
-	aiByModel := make(map[string]string) // modelKey -> personID
+	// Cache AI contacts per model to avoid repeated DB round-trips.
+	aiByModel := make(map[string]string) // modelKey -> contactID
 
 	lastEvent := ""
 	if lastEventID.Valid {
@@ -126,7 +125,7 @@ func (a *AixAdapter) Sync(ctx context.Context, cortexDB *sql.DB, full bool) (Syn
 		result.Perf["threads_"+k] = v
 	}
 
-	// Create AI persons *before* the big write transaction to avoid SQLITE_BUSY from nested transactions.
+	// Create AI contacts *before* the big write transaction to avoid SQLITE_BUSY from nested transactions.
 	modelKeys, err := a.listModelsInWindow(aixDB, lastSync, lastEvent)
 	if err != nil {
 		return result, err
@@ -135,18 +134,15 @@ func (a *AixAdapter) Sync(ctx context.Context, cortexDB *sql.DB, full bool) (Syn
 		if _, ok := aiByModel[mk]; ok {
 			continue
 		}
-		pid, createdPerson, err := a.getOrCreateAIPerson(cortexDB, mk)
+		contactID, _, err := a.getOrCreateAIContact(cortexDB, mk)
 		if err != nil {
 			return result, err
 		}
-		aiByModel[mk] = pid
-		if createdPerson {
-			result.PersonsCreated++
-		}
+		aiByModel[mk] = contactID
 	}
 
 	phaseStart := time.Now()
-	eventsCreated, eventsUpdated, maxTS, maxEventID, personsCreated, perf, err := a.syncMessages(ctx, aixDB, cortexDB, lastSync, lastEvent, mePersonID, aiByModel)
+	eventsCreated, eventsUpdated, maxTS, maxEventID, personsCreated, perf, err := a.syncMessages(ctx, aixDB, cortexDB, lastSync, lastEvent, meContactID, aiByModel)
 	if err != nil {
 		return result, err
 	}
@@ -239,71 +235,27 @@ func nullIfEmpty(s string) interface{} {
 	return s
 }
 
-func (a *AixAdapter) ensureMeIdentity(cortexDB *sql.DB, mePersonID string) error {
-	// This is intentionally coarse; Eve whoami is the canonical rich identity seed.
-	identityChannel := "aix"
-	identityIdentifier := fmt.Sprintf("aix:%s:user", a.source)
-	now := time.Now().Unix()
-	identityID := uuid.New().String()
-	_, err := cortexDB.Exec(`
-		INSERT INTO identities (id, person_id, channel, identifier, created_at)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(channel, identifier) DO UPDATE SET person_id = excluded.person_id
-	`, identityID, mePersonID, identityChannel, identityIdentifier, now)
-	if err != nil {
-		return fmt.Errorf("upsert me aix identity: %w", err)
+func (a *AixAdapter) ensureMeContact(cortexDB *sql.DB, mePersonID string) (string, error) {
+	identifier := fmt.Sprintf("aix:%s:user", a.source)
+	displayName := ""
+	if mePersonID != "" {
+		_ = cortexDB.QueryRow(`SELECT COALESCE(display_name, canonical_name) FROM persons WHERE id = ?`, mePersonID).Scan(&displayName)
 	}
-	return nil
+	contactID, _, err := contacts.GetOrCreateContact(cortexDB, "human", identifier, displayName, a.Name())
+	if err != nil {
+		return "", fmt.Errorf("upsert aix user contact: %w", err)
+	}
+	if mePersonID != "" {
+		_ = contacts.EnsurePersonContactLink(cortexDB, mePersonID, contactID, "deterministic", 1.0)
+	}
+	return contactID, nil
 }
 
-func (a *AixAdapter) getOrCreateAIPerson(cortexDB *sql.DB, modelKey string) (personID string, created bool, err error) {
-	// Map each (source, model) to a stable identity key.
-	identityChannel := "ai"
-	identityIdentifier := fmt.Sprintf("aix:%s:model:%s", a.source, modelKey)
-
-	// Try lookup first
-	row := cortexDB.QueryRow(`SELECT person_id FROM identities WHERE channel = ? AND identifier = ?`, identityChannel, identityIdentifier)
-	if err := row.Scan(&personID); err == nil {
-		return personID, false, nil
-	} else if err != sql.ErrNoRows {
-		return "", false, fmt.Errorf("failed to query ai identity: %w", err)
-	}
-
-	// Create person + identity
-	personID = uuid.New().String()
-	now := time.Now().Unix()
-	canonicalName := "AI Assistant"
+func (a *AixAdapter) getOrCreateAIContact(cortexDB *sql.DB, modelKey string) (string, bool, error) {
+	identifier := fmt.Sprintf("aix:%s:model:%s", a.source, modelKey)
 	sourceTitle := strings.ToUpper(a.source[:1]) + a.source[1:]
 	displayName := fmt.Sprintf("%s AI (%s)", sourceTitle, modelKey)
-
-	tx, err := cortexDB.Begin()
-	if err != nil {
-		return "", false, fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	_, err = tx.Exec(`
-		INSERT INTO persons (id, canonical_name, display_name, is_me, created_at, updated_at)
-		VALUES (?, ?, ?, 0, ?, ?)
-	`, personID, canonicalName, displayName, now, now)
-	if err != nil {
-		return "", false, fmt.Errorf("insert ai person: %w", err)
-	}
-
-	identityID := uuid.New().String()
-	_, err = tx.Exec(`
-		INSERT INTO identities (id, person_id, channel, identifier, created_at)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(channel, identifier) DO NOTHING
-	`, identityID, personID, identityChannel, identityIdentifier, now)
-	if err != nil {
-		return "", false, fmt.Errorf("insert ai identity: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return "", false, fmt.Errorf("commit tx: %w", err)
-	}
-	return personID, true, nil
+	return contacts.GetOrCreateContact(cortexDB, "ai", identifier, displayName, a.Name())
 }
 
 func (a *AixAdapter) syncMessages(
@@ -312,7 +264,7 @@ func (a *AixAdapter) syncMessages(
 	cortexDB *sql.DB,
 	lastSyncSeconds int64,
 	lastEventID string,
-	mePersonID string,
+	meContactID string,
 	aiByModel map[string]string,
 ) (created int, updated int, maxImportedTS int64, maxImportedEventID string, personsCreated int, perf map[string]string, err error) {
 	_ = ctx
@@ -423,7 +375,7 @@ func (a *AixAdapter) syncMessages(
 	defer stmtUpdateToolEvent.Close()
 
 	stmtInsertParticipant, err := tx.Prepare(`
-		INSERT OR IGNORE INTO event_participants (event_id, person_id, role)
+		INSERT OR IGNORE INTO event_participants (event_id, contact_id, role)
 		VALUES (?, ?, ?)
 	`)
 	if err != nil {
@@ -456,10 +408,10 @@ func (a *AixAdapter) syncMessages(
 			modelKey = strings.TrimSpace(model.String)
 		}
 
-		aiPersonID, ok := aiByModel[modelKey]
+		aiContactID, ok := aiByModel[modelKey]
 		if !ok {
 			// Should have been prefetched; fall back to "unknown" if needed.
-			aiPersonID = aiByModel["unknown"]
+			aiContactID = aiByModel["unknown"]
 		}
 
 		// Map to cortex event semantics
@@ -507,17 +459,17 @@ func (a *AixAdapter) syncMessages(
 		}
 
 		// Participants
-		if mePersonID != "" && aiPersonID != "" {
+		if meContactID != "" && aiContactID != "" {
 			switch role {
 			case "user":
-				_, _ = stmtInsertParticipant.Exec(eventID, mePersonID, "sender")
-				_, _ = stmtInsertParticipant.Exec(eventID, aiPersonID, "recipient")
+				_, _ = stmtInsertParticipant.Exec(eventID, meContactID, "sender")
+				_, _ = stmtInsertParticipant.Exec(eventID, aiContactID, "recipient")
 			case "assistant":
-				_, _ = stmtInsertParticipant.Exec(eventID, aiPersonID, "sender")
-				_, _ = stmtInsertParticipant.Exec(eventID, mePersonID, "recipient")
+				_, _ = stmtInsertParticipant.Exec(eventID, aiContactID, "sender")
+				_, _ = stmtInsertParticipant.Exec(eventID, meContactID, "recipient")
 			default:
-				_, _ = stmtInsertParticipant.Exec(eventID, mePersonID, "observer")
-				_, _ = stmtInsertParticipant.Exec(eventID, aiPersonID, "observer")
+				_, _ = stmtInsertParticipant.Exec(eventID, meContactID, "observer")
+				_, _ = stmtInsertParticipant.Exec(eventID, aiContactID, "observer")
 			}
 		}
 	}
@@ -609,12 +561,12 @@ func (a *AixAdapter) syncMessages(
 	return created, updated, maxImportedTS, maxImportedEventID, personsCreated, perf, nil
 }
 
-func insertParticipant(db *sql.DB, eventID, personID, role string) error {
+func insertParticipant(db *sql.DB, eventID, contactID, role string) error {
 	_, err := db.Exec(`
-		INSERT INTO event_participants (event_id, person_id, role)
+		INSERT INTO event_participants (event_id, contact_id, role)
 		VALUES (?, ?, ?)
-		ON CONFLICT(event_id, person_id, role) DO NOTHING
-	`, eventID, personID, role)
+		ON CONFLICT(event_id, contact_id, role) DO NOTHING
+	`, eventID, contactID, role)
 	return err
 }
 

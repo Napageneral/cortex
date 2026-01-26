@@ -15,8 +15,8 @@ import (
 
 	"encoding/base64"
 	"github.com/Napageneral/cortex/internal/bus"
+	"github.com/Napageneral/cortex/internal/contacts"
 	"github.com/Napageneral/cortex/internal/state"
-	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 )
 
@@ -268,7 +268,7 @@ func (g *GmailAdapter) Sync(ctx context.Context, cortexDB *sql.DB, full bool) (S
 	// - Incremental: Gmail search using after:YYYY/MM/DD (day granularity; duplicates are OK via upsert)
 	//
 	// This avoids the Gmail History API requirement of a "since history ID", which we don't have initially.
-	personCache := newEmailPersonCache()
+	personCache := newEmailContactCache()
 
 	backfillCursor := ""
 	if lastEventID.Valid && strings.HasPrefix(lastEventID.String, "backfill:") {
@@ -727,7 +727,7 @@ func (g *GmailAdapter) fetchMessageWithRetry(ctx context.Context, messageID stri
 }
 
 // syncQuery searches threads for query, fetches each thread, and upserts all messages.
-func (g *GmailAdapter) syncQuery(ctx context.Context, cortexDB *sql.DB, query string, cache *emailPersonCache, onProgress func(done, total int)) (int, int, int, int64, error) {
+func (g *GmailAdapter) syncQuery(ctx context.Context, cortexDB *sql.DB, query string, cache *emailContactCache, onProgress func(done, total int)) (int, int, int, int64, error) {
 	start := time.Now()
 	tSearch := time.Now()
 	threadIDs, err := g.fetchThreadIDs(ctx, query)
@@ -837,7 +837,7 @@ func (g *GmailAdapter) syncQuery(ctx context.Context, cortexDB *sql.DB, query st
 }
 
 // syncThread syncs a single Gmail thread into the cortex database
-func (g *GmailAdapter) syncThread(ctx context.Context, cortexDB *sql.DB, thread GmailThread, cache *emailPersonCache) (int, int, int, int64, error) {
+func (g *GmailAdapter) syncThread(ctx context.Context, cortexDB *sql.DB, thread GmailThread, cache *emailContactCache) (int, int, int, int64, error) {
 	eventsCreated := 0
 	eventsUpdated := 0
 	personsCreated := 0
@@ -920,7 +920,7 @@ func (g *GmailAdapter) syncThread(ctx context.Context, cortexDB *sql.DB, thread 
 	return eventsCreated, eventsUpdated, personsCreated, maxHistory, nil
 }
 
-func (g *GmailAdapter) syncHistory(ctx context.Context, cortexDB *sql.DB, since int64, cache *emailPersonCache) (int, int, int, int64, error) {
+func (g *GmailAdapter) syncHistory(ctx context.Context, cortexDB *sql.DB, since int64, cache *emailContactCache) (int, int, int, int64, error) {
 	start := time.Now()
 	pageToken := ""
 	newHistory := since
@@ -1020,7 +1020,7 @@ func (g *GmailAdapter) syncHistory(ctx context.Context, cortexDB *sql.DB, since 
 	return eventsCreated, eventsUpdated, personsCreated, newHistory, nil
 }
 
-func (g *GmailAdapter) syncMessage(ctx context.Context, cortexDB *sql.DB, message GmailMessage, cache *emailPersonCache) (int, int, int, error) {
+func (g *GmailAdapter) syncMessage(ctx context.Context, cortexDB *sql.DB, message GmailMessage, cache *emailContactCache) (int, int, int, error) {
 	eventsCreated := 0
 	eventsUpdated := 0
 	personsCreated := 0
@@ -1184,29 +1184,31 @@ func (g *GmailAdapter) hasAttachments(payload GmailPayload) bool {
 	return false
 }
 
-// syncParticipants creates persons and identities for email participants
-func (g *GmailAdapter) syncParticipants(cortexDB *sql.DB, eventID, from, to, cc, direction string, cache *emailPersonCache) (int, error) {
+// syncParticipants creates contacts (and persons when names exist) for email participants.
+func (g *GmailAdapter) syncParticipants(cortexDB *sql.DB, eventID, from, to, cc, direction string, cache *emailContactCache) (int, error) {
 	personsCreated := 0
 
 	// Parse and add sender
 	if from != "" {
 		fromEmails := parseEmailAddresses(from)
-		for _, email := range fromEmails {
-			personID, created, err := g.getOrCreatePersonByEmail(cortexDB, email, cache)
+		for _, participant := range fromEmails {
+			contactID, _, err := g.getOrCreateContactByEmail(cortexDB, participant.Email, participant.Name, cache)
 			if err != nil {
 				return personsCreated, err
 			}
-			if created {
+			if _, created, err := contacts.EnsurePersonForContact(cortexDB, contactID, participant.Name, "deterministic", 0.8); err != nil {
+				return personsCreated, err
+			} else if created {
 				personsCreated++
 			}
 
 			// Add as sender
 			role := "sender"
 			_, err = cortexDB.Exec(`
-				INSERT INTO event_participants (event_id, person_id, role)
+				INSERT INTO event_participants (event_id, contact_id, role)
 				VALUES (?, ?, ?)
-				ON CONFLICT(event_id, person_id, role) DO NOTHING
-			`, eventID, personID, role)
+				ON CONFLICT(event_id, contact_id, role) DO NOTHING
+			`, eventID, contactID, role)
 			if err != nil {
 				return personsCreated, fmt.Errorf("failed to insert sender participant: %w", err)
 			}
@@ -1216,21 +1218,23 @@ func (g *GmailAdapter) syncParticipants(cortexDB *sql.DB, eventID, from, to, cc,
 	// Parse and add recipients
 	if to != "" {
 		toEmails := parseEmailAddresses(to)
-		for _, email := range toEmails {
-			personID, created, err := g.getOrCreatePersonByEmail(cortexDB, email, cache)
+		for _, participant := range toEmails {
+			contactID, _, err := g.getOrCreateContactByEmail(cortexDB, participant.Email, participant.Name, cache)
 			if err != nil {
 				return personsCreated, err
 			}
-			if created {
+			if _, created, err := contacts.EnsurePersonForContact(cortexDB, contactID, participant.Name, "deterministic", 0.8); err != nil {
+				return personsCreated, err
+			} else if created {
 				personsCreated++
 			}
 
 			// Add as recipient
 			_, err = cortexDB.Exec(`
-				INSERT INTO event_participants (event_id, person_id, role)
+				INSERT INTO event_participants (event_id, contact_id, role)
 				VALUES (?, ?, ?)
-				ON CONFLICT(event_id, person_id, role) DO NOTHING
-			`, eventID, personID, "recipient")
+				ON CONFLICT(event_id, contact_id, role) DO NOTHING
+			`, eventID, contactID, "recipient")
 			if err != nil {
 				return personsCreated, fmt.Errorf("failed to insert recipient participant: %w", err)
 			}
@@ -1240,21 +1244,23 @@ func (g *GmailAdapter) syncParticipants(cortexDB *sql.DB, eventID, from, to, cc,
 	// Parse and add CC recipients
 	if cc != "" {
 		ccEmails := parseEmailAddresses(cc)
-		for _, email := range ccEmails {
-			personID, created, err := g.getOrCreatePersonByEmail(cortexDB, email, cache)
+		for _, participant := range ccEmails {
+			contactID, _, err := g.getOrCreateContactByEmail(cortexDB, participant.Email, participant.Name, cache)
 			if err != nil {
 				return personsCreated, err
 			}
-			if created {
+			if _, created, err := contacts.EnsurePersonForContact(cortexDB, contactID, participant.Name, "deterministic", 0.8); err != nil {
+				return personsCreated, err
+			} else if created {
 				personsCreated++
 			}
 
 			// Add as CC
 			_, err = cortexDB.Exec(`
-				INSERT INTO event_participants (event_id, person_id, role)
+				INSERT INTO event_participants (event_id, contact_id, role)
 				VALUES (?, ?, ?)
-				ON CONFLICT(event_id, person_id, role) DO NOTHING
-			`, eventID, personID, "cc")
+				ON CONFLICT(event_id, contact_id, role) DO NOTHING
+			`, eventID, contactID, "cc")
 			if err != nil {
 				return personsCreated, fmt.Errorf("failed to insert CC participant: %w", err)
 			}
@@ -1264,67 +1270,36 @@ func (g *GmailAdapter) syncParticipants(cortexDB *sql.DB, eventID, from, to, cc,
 	return personsCreated, nil
 }
 
-// getOrCreatePersonByEmail finds or creates a person by email address
-func (g *GmailAdapter) getOrCreatePersonByEmail(cortexDB *sql.DB, email string, cache *emailPersonCache) (string, bool, error) {
-	email = strings.TrimSpace(strings.ToLower(email))
-	if email == "" {
+// getOrCreateContactByEmail finds or creates a contact by email address.
+func (g *GmailAdapter) getOrCreateContactByEmail(cortexDB *sql.DB, email, displayName string, cache *emailContactCache) (string, bool, error) {
+	normalized := contacts.NormalizeIdentifier(email, "email")
+	if normalized == "" {
 		return "", false, fmt.Errorf("empty email address")
 	}
-
 	if cache != nil {
-		if personID, ok := cache.get(email); ok {
-			return personID, false, nil
+		if contactID, ok := cache.get(normalized); ok {
+			return contactID, false, nil
 		}
 	}
 
-	// Try to find existing person by email identity
-	var personID string
-	row := cortexDB.QueryRow(`
-		SELECT person_id FROM identities
-		WHERE channel = 'email' AND identifier = ?
-	`, email)
-	if err := row.Scan(&personID); err == nil {
-		if cache != nil {
-			cache.set(email, personID)
-		}
-		return personID, false, nil
-	} else if err != sql.ErrNoRows {
-		return "", false, fmt.Errorf("failed to query identity: %w", err)
-	}
-
-	// Person doesn't exist, create new one
-	personID = uuid.New().String()
-	now := time.Now().Unix()
-
-	// Use email as canonical name (user can update later with display name)
-	_, err := cortexDB.Exec(`
-		INSERT INTO persons (id, canonical_name, is_me, created_at, updated_at)
-		VALUES (?, ?, 0, ?, ?)
-	`, personID, email, now, now)
+	contactID, created, err := contacts.GetOrCreateContact(cortexDB, "email", email, displayName, g.Name())
 	if err != nil {
-		return "", false, fmt.Errorf("failed to insert person: %w", err)
+		return "", false, err
 	}
-
-	// Create identity
-	identityID := uuid.New().String()
-	_, err = cortexDB.Exec(`
-		INSERT INTO identities (id, person_id, channel, identifier, created_at)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(channel, identifier) DO NOTHING
-	`, identityID, personID, "email", email, now)
-	if err != nil {
-		return "", false, fmt.Errorf("failed to insert identity: %w", err)
-	}
-
 	if cache != nil {
-		cache.set(email, personID)
+		cache.set(normalized, contactID)
 	}
-	return personID, true, nil
+	return contactID, created, nil
 }
 
-// parseEmailAddresses parses a comma-separated list of email addresses
-// Handles formats like: "Name <email@example.com>, email2@example.com"
-func parseEmailAddresses(s string) []string {
+type emailParticipant struct {
+	Email string
+	Name  string
+}
+
+// parseEmailAddresses parses a comma-separated list of email addresses.
+// Handles formats like: "Name <email@example.com>, email2@example.com".
+func parseEmailAddresses(s string) []emailParticipant {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil
@@ -1332,41 +1307,47 @@ func parseEmailAddresses(s string) []string {
 
 	// Try robust parsing first.
 	if addrs, err := mail.ParseAddressList(s); err == nil && len(addrs) > 0 {
-		emails := make([]string, 0, len(addrs))
+		out := make([]emailParticipant, 0, len(addrs))
 		for _, a := range addrs {
 			if a == nil {
 				continue
 			}
-			if e := strings.TrimSpace(strings.ToLower(a.Address)); e != "" {
-				emails = append(emails, e)
+			email := strings.TrimSpace(strings.ToLower(a.Address))
+			if email == "" {
+				continue
 			}
+			name := strings.TrimSpace(a.Name)
+			out = append(out, emailParticipant{Email: email, Name: name})
 		}
-		if len(emails) > 0 {
-			return emails
+		if len(out) > 0 {
+			return out
 		}
 	}
 
 	// Fallback: naive split.
-	var emails []string
+	var out []emailParticipant
 	parts := strings.Split(s, ",")
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
 		}
+		name := ""
+		email := part
 		if idx := strings.Index(part, "<"); idx >= 0 {
 			endIdx := strings.Index(part[idx:], ">")
 			if endIdx > 0 {
-				email := strings.TrimSpace(part[idx+1 : idx+endIdx])
-				if email != "" {
-					emails = append(emails, strings.ToLower(email))
-				}
-				continue
+				name = strings.TrimSpace(part[:idx])
+				email = strings.TrimSpace(part[idx+1 : idx+endIdx])
 			}
 		}
-		emails = append(emails, strings.ToLower(part))
+		email = strings.ToLower(strings.TrimSpace(email))
+		if email == "" {
+			continue
+		}
+		out = append(out, emailParticipant{Email: email, Name: name})
 	}
-	return emails
+	return out
 }
 
 func decodeMIMEHeader(s string) string {
@@ -1394,24 +1375,24 @@ func decodeGmailBody(s string) string {
 	return string(b)
 }
 
-type emailPersonCache struct {
+type emailContactCache struct {
 	mu      sync.RWMutex
 	byEmail map[string]string
 }
 
-func newEmailPersonCache() *emailPersonCache {
-	return &emailPersonCache{byEmail: make(map[string]string, 1024)}
+func newEmailContactCache() *emailContactCache {
+	return &emailContactCache{byEmail: make(map[string]string, 1024)}
 }
 
-func (c *emailPersonCache) get(email string) (string, bool) {
+func (c *emailContactCache) get(email string) (string, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	id, ok := c.byEmail[email]
 	return id, ok
 }
 
-func (c *emailPersonCache) set(email, personID string) {
+func (c *emailContactCache) set(email, contactID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.byEmail[email] = personID
+	c.byEmail[email] = contactID
 }

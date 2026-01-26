@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Napageneral/cortex/internal/identify"
+	"github.com/Napageneral/cortex/internal/contacts"
 	"github.com/google/uuid"
 )
 
@@ -71,34 +71,7 @@ type gogContact struct {
 }
 
 func normalizePhone(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return ""
-	}
-	// Keep + and digits only.
-	var b strings.Builder
-	for _, r := range s {
-		if (r >= '0' && r <= '9') || r == '+' {
-			b.WriteRune(r)
-		}
-	}
-	out := b.String()
-
-	// Best-effort US normalization:
-	// - 10 digits -> +1XXXXXXXXXX
-	// - 11 digits starting with 1 -> +1XXXXXXXXXX
-	// - already has + -> leave
-	if strings.HasPrefix(out, "+") {
-		return out
-	}
-	digits := out
-	if len(digits) == 10 {
-		return "+1" + digits
-	}
-	if len(digits) == 11 && strings.HasPrefix(digits, "1") {
-		return "+" + digits
-	}
-	return out
+	return contacts.NormalizeIdentifier(s, "phone")
 }
 
 func (c *ContactsAdapter) fetchContacts(ctx context.Context) ([]gogContact, error) {
@@ -280,26 +253,25 @@ func (c *ContactsAdapter) Sync(ctx context.Context, cortexDB *sql.DB, full bool)
 
 	// Phase 1: List all contacts (paginated, fast)
 	tList := time.Now()
-	contacts, err := c.fetchContacts(ctx)
+	gogContacts, err := c.fetchContacts(ctx)
 	if err != nil {
 		return res, err
 	}
 	res.Perf["list_duration"] = time.Since(tList).String()
-	res.Perf["contacts_total"] = fmt.Sprintf("%d", len(contacts))
+	res.Perf["contacts_total"] = fmt.Sprintf("%d", len(gogContacts))
 
 	// Phase 2: Parallel fetch details for people/... contacts
 	tDetails := time.Now()
-	detailed := c.fetchAllDetailsParallel(ctx, contacts)
+	detailed := c.fetchAllDetailsParallel(ctx, gogContacts)
 	res.Perf["details_duration"] = time.Since(tDetails).String()
 	res.Perf["details_fetched"] = fmt.Sprintf("%d", len(detailed))
 
-	// Phase 3: Process and merge identities (DB-bound, sequential)
-	// We intentionally do NOT wrap the entire run in one transaction because
-	// merges (identify.Merge) are transactional themselves and we'd otherwise
-	// end up nesting transactions / fighting locks.
+	// Phase 3: Process contacts and link to persons (DB-bound, sequential)
+	// We intentionally do NOT wrap the entire run in one transaction to keep
+	// writes short and reduce lock contention.
 	tProcess := time.Now()
 	processed := 0
-	merged := 0
+	linked := 0
 
 	for _, ctc := range detailed {
 		select {
@@ -312,104 +284,60 @@ func (c *ContactsAdapter) Sync(ctx context.Context, cortexDB *sql.DB, full bool)
 		phones := ctc.Phones
 		name := ctc.Name
 
-		// Find existing persons for any identities we have.
-		var basePerson string
-		baseIsMe := false
-
-		// Prefer "me" if any identity belongs to me.
-		var candidates []struct {
-			ch    string
-			ident string
-		}
+		contactIDs := make([]string, 0, len(emails)+len(phones))
 		for _, e := range emails {
-			candidates = append(candidates, struct {
-				ch    string
-				ident string
-			}{ch: "email", ident: e})
+			if strings.TrimSpace(e) == "" {
+				continue
+			}
+			contactID, _, err := contacts.GetOrCreateContact(cortexDB, "email", e, name, c.Name())
+			if err != nil {
+				return res, err
+			}
+			contactIDs = append(contactIDs, contactID)
 		}
 		for _, p := range phones {
-			candidates = append(candidates, struct {
-				ch    string
-				ident string
-			}{ch: "phone", ident: p})
-		}
-		for _, cand := range candidates {
-			if cand.ident == "" {
+			if strings.TrimSpace(p) == "" {
 				continue
 			}
-			pid, isMe, ok, err := c.getPersonByIdentity(cortexDB, cand.ch, cand.ident)
+			contactID, _, err := contacts.GetOrCreateContact(cortexDB, "phone", p, name, c.Name())
 			if err != nil {
 				return res, err
 			}
-			if !ok {
-				continue
+			contactIDs = append(contactIDs, contactID)
+		}
+
+		if len(contactIDs) == 0 {
+			continue
+		}
+
+		var basePerson string
+		for _, cid := range contactIDs {
+			pid, err := contacts.GetLinkedPersonID(cortexDB, cid)
+			if err != nil {
+				return res, err
 			}
-			if isMe {
+			if pid != "" {
 				basePerson = pid
-				baseIsMe = true
 				break
 			}
-			if basePerson == "" {
-				basePerson = pid
-			}
 		}
-
-		// Create base person if none exists.
-		if basePerson == "" {
-			canonical := name
-			if canonical == "" {
-				if len(emails) > 0 && emails[0] != "" {
-					canonical = emails[0]
-				} else if len(phones) > 0 && phones[0] != "" {
-					canonical = phones[0]
-				} else if ctc.Resource != "" {
-					canonical = ctc.Resource
-				} else {
-					continue
-				}
-			}
-			pid, err := c.createPerson(cortexDB, canonical)
+		if basePerson == "" && contacts.IsMeaningfulPersonName(name) {
+			pid, created, err := contacts.EnsurePersonForContact(cortexDB, contactIDs[0], name, "deterministic", 1.0)
 			if err != nil {
 				return res, err
+			}
+			if created {
+				res.PersonsCreated++
 			}
 			basePerson = pid
-			res.PersonsCreated++
 		}
 
-		// Best-effort: set display_name to contact name if we have one and display_name is empty.
-		if name != "" {
-			_, _ = cortexDB.Exec(`UPDATE persons SET display_name = ?, updated_at = ? WHERE id = ? AND (display_name IS NULL OR display_name = '')`, name, time.Now().Unix(), basePerson)
-		}
-
-		// Add identities to base person. If identity already belongs to someone else, merge.
-		for _, cand := range candidates {
-			if cand.ident == "" {
-				continue
-			}
-
-			pid, isMe, ok, err := c.getPersonByIdentity(cortexDB, cand.ch, cand.ident)
-			if err != nil {
-				return res, err
-			}
-
-			if ok && pid != basePerson {
-				// Merge into base. If other is me, swap (never merge me into others).
-				if isMe && !baseIsMe {
-					// Base becomes me; merge old base into me.
-					if err := identify.Merge(cortexDB, pid, basePerson); err == nil {
-						merged++
-						basePerson = pid
-						baseIsMe = true
-					}
-				} else {
-					if err := identify.Merge(cortexDB, basePerson, pid); err == nil {
-						merged++
-					}
-				}
-			} else if !ok {
-				if err := c.addIdentity(cortexDB, basePerson, cand.ch, cand.ident); err != nil {
+		if basePerson != "" {
+			for _, cid := range contactIDs {
+				if err := contacts.EnsurePersonContactLink(cortexDB, basePerson, cid, "deterministic", 1.0); err != nil {
 					return res, err
 				}
+				linked++
 			}
 		}
 
@@ -421,7 +349,7 @@ func (c *ContactsAdapter) Sync(ctx context.Context, cortexDB *sql.DB, full bool)
 
 	res.Perf["process_duration"] = time.Since(tProcess).String()
 	res.Perf["contacts_processed"] = fmt.Sprintf("%d", processed)
-	res.Perf["contacts_merged"] = fmt.Sprintf("%d", merged)
+	res.Perf["contacts_linked"] = fmt.Sprintf("%d", linked)
 	res.Duration = time.Since(start)
 	res.Perf["total"] = res.Duration.String()
 	return res, nil

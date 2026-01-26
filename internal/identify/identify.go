@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/Napageneral/cortex/internal/contacts"
 )
 
-// PersonWithIdentities represents a person with their identities
+// PersonWithIdentities represents a person with their contact identifiers.
 type PersonWithIdentities struct {
 	ID             string
 	CanonicalName  string
@@ -21,7 +21,7 @@ type PersonWithIdentities struct {
 	LastEventAt    *time.Time
 }
 
-// IdentityInfo represents an identity
+// IdentityInfo represents a contact identifier.
 type IdentityInfo struct {
 	ID         string
 	Channel    string
@@ -29,7 +29,7 @@ type IdentityInfo struct {
 	CreatedAt  time.Time
 }
 
-// ListAll returns all persons with their identities
+// ListAll returns all persons with their contact identifiers.
 func ListAll(db *sql.DB) ([]PersonWithIdentities, error) {
 	rows, err := db.Query(`
 		SELECT
@@ -37,7 +37,8 @@ func ListAll(db *sql.DB) ([]PersonWithIdentities, error) {
 			COALESCE(COUNT(DISTINCT ep.event_id), 0) as event_count,
 			MAX(e.timestamp) as last_event_at
 		FROM persons p
-		LEFT JOIN event_participants ep ON p.id = ep.person_id
+		LEFT JOIN person_contact_links pcl ON p.id = pcl.person_id
+		LEFT JOIN event_participants ep ON pcl.contact_id = ep.contact_id
 		LEFT JOIN events e ON ep.event_id = e.id
 		GROUP BY p.id
 		ORDER BY event_count DESC, p.canonical_name
@@ -71,7 +72,7 @@ func ListAll(db *sql.DB) ([]PersonWithIdentities, error) {
 		// Get identities for this person
 		identities, err := getIdentitiesForPerson(db, p.ID)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get identities for person %s: %w", p.ID, err)
+			return nil, fmt.Errorf("failed to get contact identifiers for person %s: %w", p.ID, err)
 		}
 		p.Identities = identities
 
@@ -91,15 +92,17 @@ func Search(db *sql.DB, searchTerm string) ([]PersonWithIdentities, error) {
 			COALESCE(COUNT(DISTINCT ep.event_id), 0) as event_count,
 			MAX(e.timestamp) as last_event_at
 		FROM persons p
-		LEFT JOIN identities i ON p.id = i.person_id
-		LEFT JOIN event_participants ep ON p.id = ep.person_id
+		LEFT JOIN person_contact_links pcl ON p.id = pcl.person_id
+		LEFT JOIN contact_identifiers ci ON pcl.contact_id = ci.contact_id
+		LEFT JOIN event_participants ep ON pcl.contact_id = ep.contact_id
 		LEFT JOIN events e ON ep.event_id = e.id
 		WHERE LOWER(p.canonical_name) LIKE ?
 		   OR LOWER(p.display_name) LIKE ?
-		   OR LOWER(i.identifier) LIKE ?
+		   OR LOWER(ci.value) LIKE ?
+		   OR LOWER(ci.normalized) LIKE ?
 		GROUP BY p.id
 		ORDER BY event_count DESC, p.canonical_name
-	`, searchPattern, searchPattern, searchPattern)
+	`, searchPattern, searchPattern, searchPattern, searchPattern)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search persons: %w", err)
 	}
@@ -129,7 +132,7 @@ func Search(db *sql.DB, searchTerm string) ([]PersonWithIdentities, error) {
 		// Get identities for this person
 		identities, err := getIdentitiesForPerson(db, p.ID)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get identities for person %s: %w", p.ID, err)
+			return nil, fmt.Errorf("failed to get contact identifiers for person %s: %w", p.ID, err)
 		}
 		p.Identities = identities
 
@@ -139,8 +142,8 @@ func Search(db *sql.DB, searchTerm string) ([]PersonWithIdentities, error) {
 	return persons, rows.Err()
 }
 
-// Merge merges person2 into person1 (union-find operation)
-// All identities and event_participants for person2 are transferred to person1
+// Merge merges person2 into person1 (union-find operation).
+// All contact links for person2 are transferred to person1.
 // person2 is then deleted
 func Merge(db *sql.DB, person1ID, person2ID string) error {
 	tx, err := db.Begin()
@@ -174,27 +177,33 @@ func Merge(db *sql.DB, person1ID, person2ID string) error {
 		return fmt.Errorf("cannot merge 'me' person into another person - swap the order")
 	}
 
-	// Update all identities from person2 to person1
-	_, err = tx.Exec("UPDATE identities SET person_id = ? WHERE person_id = ?", person1ID, person2ID)
+	// Transfer contact links from person2 to person1.
+	rows, err := tx.Query(`
+		SELECT contact_id FROM person_contact_links WHERE person_id = ?
+	`, person2ID)
 	if err != nil {
-		return fmt.Errorf("failed to transfer identities: %w", err)
+		return fmt.Errorf("failed to load contact links: %w", err)
 	}
-
-	// Update all event_participants from person2 to person1
-	// Handle potential duplicates with ON CONFLICT
-	_, err = tx.Exec(`
-		INSERT INTO event_participants (event_id, person_id, role)
-		SELECT event_id, ?, role FROM event_participants WHERE person_id = ?
-		ON CONFLICT(event_id, person_id, role) DO NOTHING
-	`, person1ID, person2ID)
-	if err != nil {
-		return fmt.Errorf("failed to transfer event participants: %w", err)
+	for rows.Next() {
+		var contactID string
+		if err := rows.Scan(&contactID); err != nil {
+			rows.Close()
+			return fmt.Errorf("failed to scan contact link: %w", err)
+		}
+		if err := contacts.EnsurePersonContactLink(tx, person1ID, contactID, "merge", 1.0); err != nil {
+			rows.Close()
+			return fmt.Errorf("failed to transfer contact link: %w", err)
+		}
 	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("failed to iterate contact links: %w", err)
+	}
+	rows.Close()
 
-	// Delete old event_participants for person2
-	_, err = tx.Exec("DELETE FROM event_participants WHERE person_id = ?", person2ID)
+	// Delete old links for person2
+	_, err = tx.Exec("DELETE FROM person_contact_links WHERE person_id = ?", person2ID)
 	if err != nil {
-		return fmt.Errorf("failed to delete old event participants: %w", err)
+		return fmt.Errorf("failed to delete old contact links: %w", err)
 	}
 
 	// Delete person2
@@ -235,32 +244,12 @@ func AddIdentityToPerson(db *sql.DB, personID, channel, identifier string) error
 		return fmt.Errorf("person not found")
 	}
 
-	// Check if identity already exists
-	var existingPersonID string
-	err = tx.QueryRow(`
-		SELECT person_id FROM identities WHERE channel = ? AND identifier = ?
-	`, channel, identifier).Scan(&existingPersonID)
-
-	if err == nil {
-		// Identity exists - check if it belongs to this person
-		if existingPersonID == personID {
-			// Already belongs to this person, nothing to do
-			return tx.Commit()
-		}
-		return fmt.Errorf("identity %s:%s already belongs to another person (ID: %s)", channel, identifier, existingPersonID)
-	} else if err != sql.ErrNoRows {
-		return fmt.Errorf("failed to check existing identity: %w", err)
-	}
-
-	// Create new identity
-	newID := uuid.New().String()
-	now := time.Now().Unix()
-	_, err = tx.Exec(`
-		INSERT INTO identities (id, person_id, channel, identifier, created_at)
-		VALUES (?, ?, ?, ?, ?)
-	`, newID, personID, channel, identifier, now)
+	contactID, _, err := contacts.GetOrCreateContact(tx, channel, identifier, "", "manual")
 	if err != nil {
-		return fmt.Errorf("failed to create identity: %w", err)
+		return fmt.Errorf("failed to create contact: %w", err)
+	}
+	if err := contacts.EnsurePersonContactLink(tx, personID, contactID, "manual", 1.0); err != nil {
+		return fmt.Errorf("failed to link contact: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -282,7 +271,8 @@ func GetPersonByName(db *sql.DB, name string) (*PersonWithIdentities, error) {
 			COALESCE(COUNT(DISTINCT ep.event_id), 0) as event_count,
 			MAX(e.timestamp) as last_event_at
 		FROM persons p
-		LEFT JOIN event_participants ep ON p.id = ep.person_id
+		LEFT JOIN person_contact_links pcl ON p.id = pcl.person_id
+		LEFT JOIN event_participants ep ON pcl.contact_id = ep.contact_id
 		LEFT JOIN events e ON ep.event_id = e.id
 		WHERE p.canonical_name = ? OR p.display_name = ?
 		GROUP BY p.id
@@ -309,23 +299,24 @@ func GetPersonByName(db *sql.DB, name string) (*PersonWithIdentities, error) {
 	// Get identities for this person
 	identities, err := getIdentitiesForPerson(db, p.ID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get identities for person %s: %w", p.ID, err)
+		return nil, fmt.Errorf("failed to get contact identifiers for person %s: %w", p.ID, err)
 	}
 	p.Identities = identities
 
 	return &p, nil
 }
 
-// getIdentitiesForPerson is a helper to fetch identities for a person
+// getIdentitiesForPerson is a helper to fetch contact identifiers for a person.
 func getIdentitiesForPerson(db *sql.DB, personID string) ([]IdentityInfo, error) {
 	rows, err := db.Query(`
-		SELECT id, channel, identifier, created_at
-		FROM identities
-		WHERE person_id = ?
-		ORDER BY channel, identifier
+		SELECT ci.id, ci.type, ci.value, ci.created_at
+		FROM person_contact_links pcl
+		JOIN contact_identifiers ci ON pcl.contact_id = ci.contact_id
+		WHERE pcl.person_id = ?
+		ORDER BY ci.type, ci.value
 	`, personID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query identities: %w", err)
+		return nil, fmt.Errorf("failed to query contact identifiers: %w", err)
 	}
 	defer rows.Close()
 

@@ -1021,7 +1021,7 @@ func (e *Engine) buildEpisodeText(ctx context.Context, episodeID string) (string
 			e.id,
 			e.content,
 			e.timestamp,
-			p.canonical_name,
+			COALESCE(p.canonical_name, c.display_name),
 			e.direction,
 			(
 				SELECT GROUP_CONCAT(
@@ -1038,7 +1038,13 @@ func (e *Engine) buildEpisodeText(ctx context.Context, episodeID string) (string
 		FROM episode_events ee
 		JOIN events e ON ee.event_id = e.id
 		LEFT JOIN event_participants ep ON e.id = ep.event_id AND ep.role = 'sender'
-		LEFT JOIN persons p ON ep.person_id = p.id
+		LEFT JOIN contacts c ON ep.contact_id = c.id
+		LEFT JOIN persons p ON p.id = (
+			SELECT person_id FROM person_contact_links pcl
+			WHERE pcl.contact_id = ep.contact_id
+			ORDER BY confidence DESC, last_seen_at DESC
+			LIMIT 1
+		)
 		WHERE ee.episode_id = ?
 		ORDER BY ee.position
 	`, episodeID)
@@ -1145,7 +1151,7 @@ func (e *Engine) buildEpisodeTextMasked(ctx context.Context, episodeID string) (
 			e.id,
 			e.content,
 			e.timestamp,
-			p.id,
+			ep.contact_id,
 			p.is_me,
 			e.direction,
 			(
@@ -1163,7 +1169,12 @@ func (e *Engine) buildEpisodeTextMasked(ctx context.Context, episodeID string) (
 		FROM episode_events ee
 		JOIN events e ON ee.event_id = e.id
 		LEFT JOIN event_participants ep ON e.id = ep.event_id AND ep.role = 'sender'
-		LEFT JOIN persons p ON ep.person_id = p.id
+		LEFT JOIN persons p ON p.id = (
+			SELECT person_id FROM person_contact_links pcl
+			WHERE pcl.contact_id = ep.contact_id
+			ORDER BY confidence DESC, last_seen_at DESC
+			LIMIT 1
+		)
 		WHERE ee.episode_id = ?
 		ORDER BY ee.position
 	`, episodeID)
@@ -1251,8 +1262,8 @@ func (e *Engine) buildFacetText(ctx context.Context, facetID string) (string, er
 	return fmt.Sprintf("%s: %s", facetType, value), nil
 }
 
-// buildPersonText builds text representation of a person for embedding
-// Includes name and all known identities/facts
+// buildPersonText builds text representation of a person for embedding.
+// Includes name and linked contact identifiers/facts.
 func (e *Engine) buildPersonText(ctx context.Context, personID string) (string, error) {
 	// Get person name
 	var canonicalName string
@@ -1273,27 +1284,30 @@ func (e *Engine) buildPersonText(ctx context.Context, personID string) (string, 
 		sb.WriteString(")")
 	}
 
-	// Get identities
+	// Get contact identifiers
 	rows, err := e.db.QueryContext(ctx, `
-		SELECT channel, identifier FROM identities WHERE person_id = ?
+		SELECT ci.type, ci.value
+		FROM person_contact_links pcl
+		JOIN contact_identifiers ci ON pcl.contact_id = ci.contact_id
+		WHERE pcl.person_id = ?
 	`, personID)
 	if err != nil {
 		return sb.String(), nil // Return what we have
 	}
 	defer rows.Close()
 
-	var identities []string
+	var identifiers []string
 	for rows.Next() {
-		var channel, identifier string
-		if err := rows.Scan(&channel, &identifier); err != nil {
+		var typ, value string
+		if err := rows.Scan(&typ, &value); err != nil {
 			continue
 		}
-		identities = append(identities, fmt.Sprintf("%s: %s", channel, identifier))
+		identifiers = append(identifiers, fmt.Sprintf("%s: %s", typ, value))
 	}
 
-	if len(identities) > 0 {
-		sb.WriteString(" | identities: ")
-		sb.WriteString(strings.Join(identities, ", "))
+	if len(identifiers) > 0 {
+		sb.WriteString(" | contacts: ")
+		sb.WriteString(strings.Join(identifiers, ", "))
 	}
 
 	return sb.String(), nil

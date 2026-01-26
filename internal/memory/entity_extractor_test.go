@@ -217,7 +217,7 @@ func TestEntityExtractor_buildPrompt(t *testing.T) {
 				"Tyler met Casey at Anthropic.",
 				"</CURRENT_EPISODE>",
 				"Person",
-				"Company",
+				"Organization",
 				"Project",
 				"extracted_entities",
 			},

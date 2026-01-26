@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/Napageneral/cortex/internal/contacts"
 )
 
 type MBoxImportOptions struct {
@@ -119,10 +119,6 @@ func ImportMBox(ctx context.Context, db *sql.DB, opts MBoxImportOptions) (MBoxIm
 		delTags     *sql.Stmt
 		insTag      *sql.Stmt
 		upsertState *sql.Stmt
-
-		selPersonByEmail *sql.Stmt
-		insPerson        *sql.Stmt
-		insIdentity      *sql.Stmt
 	}
 
 	begin := func() (*prepared, error) {
@@ -156,9 +152,9 @@ func ImportMBox(ctx context.Context, db *sql.DB, opts MBoxImportOptions) (MBoxIm
 			return nil, err
 		}
 		if p.insPart, err = tx.Prepare(`
-			INSERT INTO event_participants (event_id, person_id, role)
+			INSERT INTO event_participants (event_id, contact_id, role)
 			VALUES (?, ?, ?)
-			ON CONFLICT(event_id, person_id, role) DO NOTHING
+			ON CONFLICT(event_id, contact_id, role) DO NOTHING
 		`); err != nil {
 			return nil, err
 		}
@@ -184,26 +180,6 @@ func ImportMBox(ctx context.Context, db *sql.DB, opts MBoxImportOptions) (MBoxIm
 				archived = excluded.archived,
 				status = excluded.status,
 				updated_at = excluded.updated_at
-		`); err != nil {
-			return nil, err
-		}
-
-		if p.selPersonByEmail, err = tx.Prepare(`
-			SELECT person_id FROM identities
-			WHERE channel = 'email' AND identifier = ?
-		`); err != nil {
-			return nil, err
-		}
-		if p.insPerson, err = tx.Prepare(`
-			INSERT INTO persons (id, canonical_name, is_me, created_at, updated_at)
-			VALUES (?, ?, 0, ?, ?)
-		`); err != nil {
-			return nil, err
-		}
-		if p.insIdentity, err = tx.Prepare(`
-			INSERT INTO identities (id, person_id, channel, identifier, created_at)
-			VALUES (?, ?, 'email', ?, ?)
-			ON CONFLICT(channel, identifier) DO NOTHING
 		`); err != nil {
 			return nil, err
 		}
@@ -235,33 +211,50 @@ func ImportMBox(ctx context.Context, db *sql.DB, opts MBoxImportOptions) (MBoxIm
 		return s
 	}
 
-	parseAddrList := func(s string) []string {
+	type emailParticipant struct {
+		Email string
+		Name  string
+	}
+
+	parseAddrList := func(s string) []emailParticipant {
 		s = strings.TrimSpace(s)
 		if s == "" {
 			return nil
 		}
 		addrs, err := mail.ParseAddressList(s)
 		if err == nil && len(addrs) > 0 {
-			out := make([]string, 0, len(addrs))
+			out := make([]emailParticipant, 0, len(addrs))
 			for _, a := range addrs {
 				if a == nil {
 					continue
 				}
 				if e := strings.TrimSpace(strings.ToLower(a.Address)); e != "" {
-					out = append(out, e)
+					out = append(out, emailParticipant{Email: e, Name: strings.TrimSpace(a.Name)})
 				}
 			}
 			return out
 		}
 		// Fallback: split by comma.
 		parts := strings.Split(s, ",")
-		var out []string
+		var out []emailParticipant
 		for _, part := range parts {
 			part = strings.TrimSpace(part)
 			if part == "" {
 				continue
 			}
-			out = append(out, strings.ToLower(part))
+			name := ""
+			email := part
+			if idx := strings.Index(part, "<"); idx >= 0 {
+				if endIdx := strings.Index(part[idx:], ">"); endIdx > 0 {
+					name = strings.TrimSpace(part[:idx])
+					email = strings.TrimSpace(part[idx+1 : idx+endIdx])
+				}
+			}
+			email = strings.ToLower(strings.TrimSpace(email))
+			if email == "" {
+				continue
+			}
+			out = append(out, emailParticipant{Email: email, Name: name})
 		}
 		return out
 	}
@@ -313,35 +306,20 @@ func ImportMBox(ctx context.Context, db *sql.DB, opts MBoxImportOptions) (MBoxIm
 		return false
 	}
 
-	getOrCreatePersonByEmail := func(email string) (string, bool, error) {
-		email = strings.TrimSpace(strings.ToLower(email))
-		if email == "" {
+	getOrCreateContactByEmail := func(email, displayName string) (string, bool, error) {
+		normalized := contacts.NormalizeIdentifier(email, "email")
+		if normalized == "" {
 			return "", false, fmt.Errorf("empty email")
 		}
-		if id, ok := emailCache[email]; ok {
+		if id, ok := emailCache[normalized]; ok {
 			return id, false, nil
 		}
-		var personID string
-		err := p.selPersonByEmail.QueryRow(email).Scan(&personID)
-		if err == nil {
-			emailCache[email] = personID
-			return personID, false, nil
-		}
-		if err != sql.ErrNoRows {
+		contactID, created, err := contacts.GetOrCreateContact(p.tx, "email", email, displayName, opts.AdapterName)
+		if err != nil {
 			return "", false, err
 		}
-
-		personID = uuid.New().String()
-		now := time.Now().Unix()
-		if _, err := p.insPerson.Exec(personID, email, now, now); err != nil {
-			return "", false, err
-		}
-		identityID := uuid.New().String()
-		if _, err := p.insIdentity.Exec(identityID, personID, email, now); err != nil {
-			return "", false, err
-		}
-		emailCache[email] = personID
-		return personID, true, nil
+		emailCache[normalized] = contactID
+		return contactID, created, nil
 	}
 
 	upsertEvent := func(eventID string, ts int64, contentTypesJSON string, content string, direction string, threadID string, sourceID string) (created bool, updated bool, err error) {
@@ -480,51 +458,51 @@ func ImportMBox(ctx context.Context, db *sql.DB, opts MBoxImportOptions) (MBoxIm
 		if direction == "sent" {
 			// Still model as sender/recipient; direction is on event.
 		}
-		for _, e := range parseAddrList(from) {
-			personID, created, err := getOrCreatePersonByEmail(e)
+		for _, participant := range parseAddrList(from) {
+			contactID, _, err := getOrCreateContactByEmail(participant.Email, participant.Name)
 			if err != nil {
 				continue
 			}
-			if created {
+			if _, created, err := contacts.EnsurePersonForContact(p.tx, contactID, participant.Name, "deterministic", 0.8); err == nil && created {
 				out.PersonsCreated++
 			}
-			if _, err := p.insPart.Exec(eventID, personID, roleSender); err != nil {
+			if _, err := p.insPart.Exec(eventID, contactID, roleSender); err != nil {
 				return err
 			}
 		}
-		for _, e := range parseAddrList(to) {
-			personID, created, err := getOrCreatePersonByEmail(e)
+		for _, participant := range parseAddrList(to) {
+			contactID, _, err := getOrCreateContactByEmail(participant.Email, participant.Name)
 			if err != nil {
 				continue
 			}
-			if created {
+			if _, created, err := contacts.EnsurePersonForContact(p.tx, contactID, participant.Name, "deterministic", 0.8); err == nil && created {
 				out.PersonsCreated++
 			}
-			if _, err := p.insPart.Exec(eventID, personID, roleRecipient); err != nil {
+			if _, err := p.insPart.Exec(eventID, contactID, roleRecipient); err != nil {
 				return err
 			}
 		}
-		for _, e := range parseAddrList(cc) {
-			personID, created, err := getOrCreatePersonByEmail(e)
+		for _, participant := range parseAddrList(cc) {
+			contactID, _, err := getOrCreateContactByEmail(participant.Email, participant.Name)
 			if err != nil {
 				continue
 			}
-			if created {
+			if _, created, err := contacts.EnsurePersonForContact(p.tx, contactID, participant.Name, "deterministic", 0.8); err == nil && created {
 				out.PersonsCreated++
 			}
-			if _, err := p.insPart.Exec(eventID, personID, "cc"); err != nil {
+			if _, err := p.insPart.Exec(eventID, contactID, "cc"); err != nil {
 				return err
 			}
 		}
-		for _, e := range parseAddrList(bcc) {
-			personID, created, err := getOrCreatePersonByEmail(e)
+		for _, participant := range parseAddrList(bcc) {
+			contactID, _, err := getOrCreateContactByEmail(participant.Email, participant.Name)
 			if err != nil {
 				continue
 			}
-			if created {
+			if _, created, err := contacts.EnsurePersonForContact(p.tx, contactID, participant.Name, "deterministic", 0.8); err == nil && created {
 				out.PersonsCreated++
 			}
-			if _, err := p.insPart.Exec(eventID, personID, "bcc"); err != nil {
+			if _, err := p.insPart.Exec(eventID, contactID, "bcc"); err != nil {
 				return err
 			}
 		}

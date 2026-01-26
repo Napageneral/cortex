@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/Napageneral/cortex/internal/bus"
+	"github.com/Napageneral/cortex/internal/contacts"
 	"github.com/Napageneral/cortex/internal/state"
-	"github.com/google/uuid"
 )
 
 // CalendarAdapter syncs Google Calendar events via gogcli.
@@ -186,49 +186,21 @@ func parseEventStartUTC(e gogCalendarEvent) (int64, error) {
 	return 0, fmt.Errorf("missing start time")
 }
 
-func (c *CalendarAdapter) getOrCreatePersonByEmail(db *sql.DB, email string, cache map[string]string) (string, bool, error) {
-	email = strings.TrimSpace(strings.ToLower(email))
-	if email == "" {
+func (c *CalendarAdapter) getOrCreateContactByEmail(db *sql.DB, email, displayName string, cache map[string]string) (string, bool, error) {
+	normalized := contacts.NormalizeIdentifier(email, "email")
+	if normalized == "" {
 		return "", false, fmt.Errorf("empty email")
 	}
-	if id, ok := cache[email]; ok {
+	if id, ok := cache[normalized]; ok {
 		return id, false, nil
 	}
 
-	var personID string
-	err := db.QueryRow(`
-		SELECT person_id FROM identities
-		WHERE channel = 'email' AND identifier = ?
-	`, email).Scan(&personID)
-	if err == nil {
-		cache[email] = personID
-		return personID, false, nil
-	}
-	if err != sql.ErrNoRows {
-		return "", false, err
-	}
-
-	personID = uuid.New().String()
-	now := time.Now().Unix()
-	_, err = db.Exec(`
-		INSERT INTO persons (id, canonical_name, is_me, created_at, updated_at)
-		VALUES (?, ?, 0, ?, ?)
-	`, personID, email, now, now)
+	contactID, created, err := contacts.GetOrCreateContact(db, "email", email, displayName, c.Name())
 	if err != nil {
 		return "", false, err
 	}
-	identityID := uuid.New().String()
-	_, err = db.Exec(`
-		INSERT INTO identities (id, person_id, channel, identifier, created_at)
-		VALUES (?, ?, 'email', ?, ?)
-		ON CONFLICT(channel, identifier) DO NOTHING
-	`, identityID, personID, email, now)
-	if err != nil {
-		return "", false, err
-	}
-
-	cache[email] = personID
-	return personID, true, nil
+	cache[normalized] = contactID
+	return contactID, created, nil
 }
 
 func (c *CalendarAdapter) upsertEvent(db *sql.DB, eventID string, ts int64, content string, threadID string, sourceID string) (created bool, updated bool, err error) {
@@ -396,24 +368,24 @@ func (c *CalendarAdapter) Sync(ctx context.Context, cortexDB *sql.DB, full bool)
 
 					// Participants: organizer + attendees
 					if ev.Organizer != nil && ev.Organizer.Email != "" {
-						pid, created, err := c.getOrCreatePersonByEmail(cortexDB, ev.Organizer.Email, cache)
+						contactID, _, err := c.getOrCreateContactByEmail(cortexDB, ev.Organizer.Email, ev.Organizer.DisplayName, cache)
 						if err == nil {
-							if created {
+							if _, created, err := contacts.EnsurePersonForContact(cortexDB, contactID, ev.Organizer.DisplayName, "deterministic", 0.9); err == nil && created {
 								res.PersonsCreated++
 							}
-							_, _ = cortexDB.Exec(`INSERT OR IGNORE INTO event_participants (event_id, person_id, role) VALUES (?, ?, 'organizer')`, eventID, pid)
+							_, _ = cortexDB.Exec(`INSERT OR IGNORE INTO event_participants (event_id, contact_id, role) VALUES (?, ?, 'organizer')`, eventID, contactID)
 						}
 					}
 					for _, a := range ev.Attendees {
 						if a.Email == "" {
 							continue
 						}
-						pid, created, err := c.getOrCreatePersonByEmail(cortexDB, a.Email, cache)
+						contactID, _, err := c.getOrCreateContactByEmail(cortexDB, a.Email, a.DisplayName, cache)
 						if err == nil {
-							if created {
+							if _, created, err := contacts.EnsurePersonForContact(cortexDB, contactID, a.DisplayName, "deterministic", 0.9); err == nil && created {
 								res.PersonsCreated++
 							}
-							_, _ = cortexDB.Exec(`INSERT OR IGNORE INTO event_participants (event_id, person_id, role) VALUES (?, ?, 'attendee')`, eventID, pid)
+							_, _ = cortexDB.Exec(`INSERT OR IGNORE INTO event_participants (event_id, contact_id, role) VALUES (?, ?, 'attendee')`, eventID, contactID)
 						}
 					}
 
@@ -461,24 +433,24 @@ func (c *CalendarAdapter) Sync(ctx context.Context, cortexDB *sql.DB, full bool)
 					res.EventsUpdated++
 				}
 				if ev.Organizer != nil && ev.Organizer.Email != "" {
-					pid, created, err := c.getOrCreatePersonByEmail(cortexDB, ev.Organizer.Email, cache)
+					contactID, _, err := c.getOrCreateContactByEmail(cortexDB, ev.Organizer.Email, ev.Organizer.DisplayName, cache)
 					if err == nil {
-						if created {
+						if _, created, err := contacts.EnsurePersonForContact(cortexDB, contactID, ev.Organizer.DisplayName, "deterministic", 0.9); err == nil && created {
 							res.PersonsCreated++
 						}
-						_, _ = cortexDB.Exec(`INSERT OR IGNORE INTO event_participants (event_id, person_id, role) VALUES (?, ?, 'organizer')`, eventID, pid)
+						_, _ = cortexDB.Exec(`INSERT OR IGNORE INTO event_participants (event_id, contact_id, role) VALUES (?, ?, 'organizer')`, eventID, contactID)
 					}
 				}
 				for _, a := range ev.Attendees {
 					if a.Email == "" {
 						continue
 					}
-					pid, created, err := c.getOrCreatePersonByEmail(cortexDB, a.Email, cache)
+					contactID, _, err := c.getOrCreateContactByEmail(cortexDB, a.Email, a.DisplayName, cache)
 					if err == nil {
-						if created {
+						if _, created, err := contacts.EnsurePersonForContact(cortexDB, contactID, a.DisplayName, "deterministic", 0.9); err == nil && created {
 							res.PersonsCreated++
 						}
-						_, _ = cortexDB.Exec(`INSERT OR IGNORE INTO event_participants (event_id, person_id, role) VALUES (?, ?, 'attendee')`, eventID, pid)
+						_, _ = cortexDB.Exec(`INSERT OR IGNORE INTO event_participants (event_id, contact_id, role) VALUES (?, ?, 'attendee')`, eventID, contactID)
 					}
 				}
 				_ = c.upsertStateAndTags(cortexDB, eventID, cal.ID, ev)

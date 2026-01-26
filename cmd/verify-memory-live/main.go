@@ -341,7 +341,8 @@ func getThreadParticipants(db *sql.DB, threadID string) ([]string, error) {
 		SELECT DISTINCT COALESCE(p.canonical_name, p.display_name, 'Unknown') as name
 		FROM events e
 		JOIN event_participants ep ON e.id = ep.event_id
-		JOIN persons p ON ep.person_id = p.id
+		JOIN person_contact_links pcl ON ep.contact_id = pcl.contact_id
+		JOIN persons p ON pcl.person_id = p.id
 		WHERE e.thread_id = ?
 		  AND p.canonical_name IS NOT NULL
 		  AND p.canonical_name != ''
@@ -374,14 +375,20 @@ func getEpisodes(db *sql.DB, threadID string, numEpisodes, eventsPerEpisode int)
 		SELECT 
 			e.id,
 			e.timestamp,
-			COALESCE(p.canonical_name, p.display_name, 
+			COALESCE(p.canonical_name, p.display_name, c.display_name,
 				CASE e.direction WHEN 'sent' THEN 'Me' ELSE 'Unknown' END) as sender,
 			COALESCE(e.content, '') as content,
 			e.direction,
 			CASE WHEN e.content_types LIKE '%image%' THEN 1 ELSE 0 END as has_image
 		FROM events e
 		LEFT JOIN event_participants ep ON e.id = ep.event_id AND ep.role = 'sender'
-		LEFT JOIN persons p ON ep.person_id = p.id
+		LEFT JOIN contacts c ON ep.contact_id = c.id
+		LEFT JOIN persons p ON p.id = (
+			SELECT person_id FROM person_contact_links pcl
+			WHERE pcl.contact_id = ep.contact_id
+			ORDER BY confidence DESC, last_seen_at DESC
+			LIMIT 1
+		)
 		WHERE e.thread_id = ?
 		  AND e.content IS NOT NULL
 		  AND e.content != ''

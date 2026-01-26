@@ -88,7 +88,8 @@ func GenerateSuggestions(db *sql.DB, opts SuggestionOptions) (int, error) {
 	rows, err := db.Query(`
 		SELECT p.id, p.canonical_name, p.display_name, COUNT(DISTINCT ep.event_id) as event_count
 		FROM persons p
-		JOIN event_participants ep ON p.id = ep.person_id
+		JOIN person_contact_links pcl ON p.id = pcl.person_id
+		JOIN event_participants ep ON pcl.contact_id = ep.contact_id
 		WHERE p.is_me = 0
 		GROUP BY p.id
 		HAVING event_count >= ?
@@ -124,21 +125,24 @@ func GenerateSuggestions(db *sql.DB, opts SuggestionOptions) (int, error) {
 		return 0, err
 	}
 
-	// Load identities for each person
+	// Load contact identifiers for each person
 	for i := range persons {
 		idRows, err := db.Query(`
-			SELECT channel, identifier FROM identities WHERE person_id = ?
+			SELECT ci.type, ci.value
+			FROM person_contact_links pcl
+			JOIN contact_identifiers ci ON pcl.contact_id = ci.contact_id
+			WHERE pcl.person_id = ?
 		`, persons[i].id)
 		if err != nil {
 			return 0, err
 		}
 		for idRows.Next() {
-			var ch, ident string
-			if err := idRows.Scan(&ch, &ident); err != nil {
+			var typ, ident string
+			if err := idRows.Scan(&typ, &ident); err != nil {
 				idRows.Close()
 				return 0, err
 			}
-			switch ch {
+			switch typ {
 			case "email":
 				persons[i].emails = append(persons[i].emails, strings.ToLower(ident))
 			case "phone":

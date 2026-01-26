@@ -28,13 +28,19 @@ func QueryTimeline(db *sql.DB, opts TimelineOptions) ([]DayStats, error) {
 		SELECT
 			DATE(e.timestamp, 'unixepoch', 'localtime') as day,
 			COUNT(*) as total_events,
-			COALESCE(p.display_name, p.canonical_name, 'Unknown') as sender_name,
+			COALESCE(p.display_name, p.canonical_name, c.display_name, 'Unknown') as sender_name,
 			e.channel,
 			e.direction,
 			COUNT(*) as count
 		FROM events e
 		LEFT JOIN event_participants ep ON e.id = ep.event_id AND ep.role = 'sender'
-		LEFT JOIN persons p ON ep.person_id = p.id
+		LEFT JOIN contacts c ON ep.contact_id = c.id
+		LEFT JOIN persons p ON p.id = (
+			SELECT person_id FROM person_contact_links pcl
+			WHERE pcl.contact_id = ep.contact_id
+			ORDER BY confidence DESC, last_seen_at DESC
+			LIMIT 1
+		)
 		WHERE e.timestamp >= ? AND e.timestamp < ?
 		GROUP BY day, sender_name, e.channel, e.direction
 		ORDER BY day DESC, count DESC

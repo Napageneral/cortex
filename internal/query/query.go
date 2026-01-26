@@ -30,7 +30,7 @@ type Event struct {
 	Participants []Participant
 }
 
-// Participant represents a person involved in an event
+// Participant represents a contact involved in an event.
 type Participant struct {
 	PersonID string
 	Name     string
@@ -62,7 +62,8 @@ func QueryEvents(db *sql.DB, filters EventFilters) ([]Event, error) {
 	if filters.PersonName != "" {
 		joins = append(joins, `
 			LEFT JOIN event_participants ep ON e.id = ep.event_id
-			LEFT JOIN persons p ON ep.person_id = p.id
+			LEFT JOIN person_contact_links pcl ON ep.contact_id = pcl.contact_id
+			LEFT JOIN persons p ON pcl.person_id = p.id
 		`)
 		conditions = append(conditions, "(LOWER(p.canonical_name) LIKE ? OR LOWER(p.display_name) LIKE ?)")
 		searchTerm := "%" + strings.ToLower(filters.PersonName) + "%"
@@ -171,11 +172,17 @@ func QueryEvents(db *sql.DB, filters EventFilters) ([]Event, error) {
 func getEventParticipants(db *sql.DB, eventID string) ([]Participant, error) {
 	query := `
 		SELECT
-			ep.person_id,
-			COALESCE(p.display_name, p.canonical_name) as name,
+			ep.contact_id,
+			COALESCE(p.display_name, p.canonical_name, c.display_name) as name,
 			ep.role
 		FROM event_participants ep
-		JOIN persons p ON ep.person_id = p.id
+		JOIN contacts c ON ep.contact_id = c.id
+		LEFT JOIN persons p ON p.id = (
+			SELECT person_id FROM person_contact_links pcl
+			WHERE pcl.contact_id = ep.contact_id
+			ORDER BY confidence DESC, last_seen_at DESC
+			LIMIT 1
+		)
 		WHERE ep.event_id = ?
 		ORDER BY
 			CASE ep.role

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/Napageneral/cortex/internal/contacts"
 	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 )
@@ -202,22 +203,22 @@ func (b *BirdAdapter) syncTweets(cortexDB *sql.DB, tweets []BirdTweet, interacti
 			eventsCreated++
 		}
 
-		// Create person for author
+		// Create contact for author
 		if tweet.Author.Username != "" {
-			personID, created, err := b.getOrCreatePersonByHandle(cortexDB, tweet.Author.Username, tweet.Author.Name)
+			contactID, _, err := b.getOrCreateContactByHandle(cortexDB, tweet.Author.Username, tweet.Author.Name)
 			if err != nil {
-				return eventsCreated, personsCreated, fmt.Errorf("failed to create person: %w", err)
+				return eventsCreated, personsCreated, fmt.Errorf("failed to create contact: %w", err)
 			}
-			if created {
+			if _, created, err := contacts.EnsurePersonForContact(cortexDB, contactID, tweet.Author.Name, "deterministic", 0.8); err == nil && created {
 				personsCreated++
 			}
 
 			// Add as sender
 			_, err = cortexDB.Exec(`
-				INSERT INTO event_participants (event_id, person_id, role)
+				INSERT INTO event_participants (event_id, contact_id, role)
 				VALUES (?, ?, ?)
-				ON CONFLICT(event_id, person_id, role) DO NOTHING
-			`, eventID, personID, "sender")
+				ON CONFLICT(event_id, contact_id, role) DO NOTHING
+			`, eventID, contactID, "sender")
 			if err != nil {
 				return eventsCreated, personsCreated, fmt.Errorf("failed to insert participant: %w", err)
 			}
@@ -227,48 +228,10 @@ func (b *BirdAdapter) syncTweets(cortexDB *sql.DB, tweets []BirdTweet, interacti
 	return eventsCreated, personsCreated, nil
 }
 
-func (b *BirdAdapter) getOrCreatePersonByHandle(cortexDB *sql.DB, handle, displayName string) (string, bool, error) {
-	handle = "@" + handle
-
-	// Try to find existing person by X handle
-	var personID string
-	row := cortexDB.QueryRow(`
-		SELECT person_id FROM identities
-		WHERE channel = 'x' AND identifier = ?
-	`, handle)
-	if err := row.Scan(&personID); err == nil {
-		return personID, false, nil
-	} else if err != sql.ErrNoRows {
-		return "", false, fmt.Errorf("failed to query identity: %w", err)
+func (b *BirdAdapter) getOrCreateContactByHandle(cortexDB *sql.DB, handle, displayName string) (string, bool, error) {
+	normalized := contacts.NormalizeIdentifier(handle, "handle")
+	if normalized == "" {
+		return "", false, fmt.Errorf("empty handle")
 	}
-
-	// Person doesn't exist, create new one
-	personID = uuid.New().String()
-	now := time.Now().Unix()
-
-	canonicalName := displayName
-	if canonicalName == "" {
-		canonicalName = handle
-	}
-
-	_, err := cortexDB.Exec(`
-		INSERT INTO persons (id, canonical_name, display_name, is_me, created_at, updated_at)
-		VALUES (?, ?, ?, 0, ?, ?)
-	`, personID, canonicalName, displayName, now, now)
-	if err != nil {
-		return "", false, fmt.Errorf("failed to insert person: %w", err)
-	}
-
-	// Create identity
-	identityID := uuid.New().String()
-	_, err = cortexDB.Exec(`
-		INSERT INTO identities (id, person_id, channel, identifier, created_at)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(channel, identifier) DO NOTHING
-	`, identityID, personID, "x", handle, now)
-	if err != nil {
-		return "", false, fmt.Errorf("failed to insert identity: %w", err)
-	}
-
-	return personID, true, nil
+	return contacts.GetOrCreateContact(cortexDB, "handle", handle, displayName, "x")
 }

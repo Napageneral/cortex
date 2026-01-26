@@ -22,7 +22,7 @@ func TestDefaultEntityTypes(t *testing.T) {
 	}{
 		{0, "Entity"},
 		{1, "Person"},
-		{2, "Company"},
+		{2, "Organization"},
 		{3, "Project"},
 		{4, "Location"},
 		{5, "Event"},
@@ -46,7 +46,7 @@ func TestGetEntityTypeByID(t *testing.T) {
 	}{
 		{0, "Entity", false},
 		{1, "Person", false},
-		{2, "Company", false},
+		{2, "Organization", false},
 		{3, "Project", false},
 		{4, "Location", false},
 		{5, "Event", false},
@@ -84,6 +84,8 @@ func TestGetEntityTypeByName(t *testing.T) {
 		{"Person", 1, false},
 		{"person", 1, false}, // case-insensitive
 		{"PERSON", 1, false}, // case-insensitive
+		{"Organization", 2, false},
+		{"organization", 2, false},
 		{"Company", 2, false},
 		{"company", 2, false},
 		{"Entity", 0, false},
@@ -138,7 +140,7 @@ func TestEntityTypeNames(t *testing.T) {
 		t.Errorf("expected 8 names, got %d", len(names))
 	}
 
-	expectedNames := []string{"Entity", "Person", "Company", "Project", "Location", "Event", "Document", "Pet"}
+	expectedNames := []string{"Entity", "Person", "Organization", "Project", "Location", "Event", "Document", "Pet"}
 	for i, name := range names {
 		if name != expectedNames[i] {
 			t.Errorf("name at index %d: got %q, want %q", i, name, expectedNames[i])
@@ -154,7 +156,7 @@ func TestEntityTypeConstants(t *testing.T) {
 	}{
 		{EntityTypeEntity, "Entity"},
 		{EntityTypePerson, "Person"},
-		{EntityTypeCompany, "Company"},
+		{EntityTypeCompany, "Organization"},
 		{EntityTypeProject, "Project"},
 		{EntityTypeLocation, "Location"},
 		{EntityTypeEvent, "Event"},

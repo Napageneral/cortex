@@ -291,7 +291,8 @@ func buildEventFilterQuery(filter EventFilter) (string, []interface{}) {
 	if filter.PersonName != "" {
 		query += `
 			JOIN event_participants ep ON e.id = ep.event_id
-			JOIN persons p ON ep.person_id = p.id
+			JOIN person_contact_links pcl ON ep.contact_id = pcl.contact_id
+			JOIN persons p ON pcl.person_id = p.id
 		`
 		conditions = append(conditions, "(p.canonical_name LIKE ? OR p.display_name LIKE ?)")
 		searchTerm := "%" + filter.PersonName + "%"

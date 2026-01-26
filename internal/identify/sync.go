@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Napageneral/cortex/internal/contacts"
 	"github.com/google/uuid"
 )
 
@@ -333,12 +334,20 @@ func ProcessPIIExtractionOutput(db *sql.DB, runID, segmentID, outputJSON string)
 
 		primaryPersonID := ""
 		if output.ExtractionMetadata.PrimaryContactIdentifier != "" {
+			identifier := strings.TrimSpace(output.ExtractionMetadata.PrimaryContactIdentifier)
+			normalized := ""
+			if strings.Contains(identifier, "@") {
+				normalized = contacts.NormalizeIdentifier(identifier, "email")
+			} else {
+				normalized = contacts.NormalizeIdentifier(identifier, "phone")
+			}
 			err := db.QueryRow(`
 				SELECT p.id FROM persons p
-				JOIN identities i ON p.id = i.person_id
-				WHERE i.identifier = ?
+				JOIN person_contact_links pcl ON p.id = pcl.person_id
+				JOIN contact_identifiers ci ON pcl.contact_id = ci.contact_id
+				WHERE ci.normalized = ? OR ci.value = ?
 				LIMIT 1
-			`, output.ExtractionMetadata.PrimaryContactIdentifier).Scan(&primaryPersonID)
+			`, normalized, identifier).Scan(&primaryPersonID)
 			if err != nil {
 				primaryPersonID = ""
 			}
@@ -495,7 +504,8 @@ func loadSegmentParticipants(db *sql.DB, segmentID string) ([]segmentParticipant
 	rows, err := db.Query(`
 		SELECT DISTINCT p.id, COALESCE(p.canonical_name, ''), COALESCE(p.display_name, ''), p.is_me
 		FROM persons p
-		JOIN event_participants ep ON p.id = ep.person_id
+		JOIN person_contact_links pcl ON p.id = pcl.person_id
+		JOIN event_participants ep ON pcl.contact_id = ep.contact_id
 		JOIN segment_events se ON se.event_id = ep.event_id
 		WHERE se.segment_id = ?
 	`, segmentID)

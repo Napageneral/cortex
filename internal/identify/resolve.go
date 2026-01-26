@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Napageneral/cortex/internal/contacts"
 	"github.com/google/uuid"
 )
 
@@ -450,24 +451,32 @@ func ExecuteMerge(db *sql.DB, mergeEventID, sourcePersonID, targetPersonID strin
 		return fmt.Errorf("move facts: %w", err)
 	}
 
-	// Move identities from source to target
-	_, err = tx.Exec(`
-		UPDATE identities 
-		SET person_id = ?
-		WHERE person_id = ?
-	`, targetPersonID, sourcePersonID)
+	// Transfer contact links from source to target
+	rows, err := tx.Query(`
+		SELECT contact_id FROM person_contact_links WHERE person_id = ?
+	`, sourcePersonID)
 	if err != nil {
-		return fmt.Errorf("move identities: %w", err)
+		return fmt.Errorf("load contact links: %w", err)
 	}
+	for rows.Next() {
+		var contactID string
+		if err := rows.Scan(&contactID); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan contact link: %w", err)
+		}
+		if err := contacts.EnsurePersonContactLink(tx, targetPersonID, contactID, "merge", 1.0); err != nil {
+			rows.Close()
+			return fmt.Errorf("link contact: %w", err)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate contact links: %w", err)
+	}
+	rows.Close()
 
-	// Update event_participants to point to target
-	_, err = tx.Exec(`
-		UPDATE OR IGNORE event_participants 
-		SET person_id = ?
-		WHERE person_id = ?
-	`, targetPersonID, sourcePersonID)
+	_, err = tx.Exec(`DELETE FROM person_contact_links WHERE person_id = ?`, sourcePersonID)
 	if err != nil {
-		return fmt.Errorf("update participants: %w", err)
+		return fmt.Errorf("delete old contact links: %w", err)
 	}
 
 	// Mark source person as merged (if persons table has merged_into column)

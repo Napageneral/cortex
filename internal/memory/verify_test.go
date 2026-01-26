@@ -248,7 +248,7 @@ func TestEntityMatches(t *testing.T) {
 		},
 		{
 			name:     "entity_type no match",
-			expected: map[string]interface{}{"entity_type": "Company"},
+			expected: map[string]interface{}{"entity_type": "Organization"},
 			want:     false,
 		},
 		{
@@ -258,7 +258,7 @@ func TestEntityMatches(t *testing.T) {
 		},
 		{
 			name:     "combined partial match",
-			expected: map[string]interface{}{"name_contains": "Tyler", "entity_type": "Company"},
+			expected: map[string]interface{}{"name_contains": "Tyler", "entity_type": "Organization"},
 			want:     false,
 		},
 	}
@@ -515,7 +515,7 @@ func TestVerifyEntityExpectations(t *testing.T) {
 
 	entities := []VerifyEntity{
 		{ID: "ent-1", CanonicalName: "Tyler Adams", EntityTypeID: 1, EntityType: "Person"},
-		{ID: "ent-2", CanonicalName: "Anthropic", EntityTypeID: 2, EntityType: "Company"},
+		{ID: "ent-2", CanonicalName: "Anthropic", EntityTypeID: 2, EntityType: "Organization"},
 	}
 
 	t.Run("must_have passes when entity found", func(t *testing.T) {
@@ -628,8 +628,8 @@ func TestCollectEntities(t *testing.T) {
 		}
 		if e.CanonicalName == "Anthropic" {
 			foundAnthropic = true
-			if e.EntityType != "Company" {
-				t.Errorf("Expected Anthropic to be Company, got %s", e.EntityType)
+			if e.EntityType != "Organization" {
+				t.Errorf("Expected Anthropic to be Organization, got %s", e.EntityType)
 			}
 		}
 	}
@@ -743,7 +743,7 @@ func TestBuildEpisodeContent(t *testing.T) {
 
 	content := h.buildEpisodeContent(episode)
 
-	expected := "Tyler: Hey, what's up?\nCasey: Not much, you?\nTyler: Just working on the memory system"
+	expected := "Tyler ← Hey, what's up?\nCasey ← Not much, you?\nTyler ← Just working on the memory system"
 	if content != expected {
 		t.Errorf("buildEpisodeContent() = %q, want %q", content, expected)
 	}

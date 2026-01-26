@@ -442,8 +442,8 @@ func TestBuildResolvedEntitiesJSON(t *testing.T) {
 	if parsed[1].ID != 1 {
 		t.Errorf("Expected ID=1, got %d", parsed[1].ID)
 	}
-	if parsed[1].EntityType != "Company" {
-		t.Errorf("Expected EntityType=Company, got %s", parsed[1].EntityType)
+	if parsed[1].EntityType != "Organization" {
+		t.Errorf("Expected EntityType=Organization, got %s", parsed[1].EntityType)
 	}
 }
 
