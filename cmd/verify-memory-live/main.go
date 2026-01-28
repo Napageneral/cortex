@@ -544,6 +544,9 @@ func getEpisodes(db *sql.DB, threadID string, numEpisodes, eventsPerEpisode, min
 			e.id,
 			e.timestamp,
 			COALESCE(p.canonical_name, p.display_name, c.display_name,
+				(SELECT ci.value FROM contact_identifiers ci 
+				 WHERE ci.contact_id = c.id AND ci.type IN ('phone', 'email')
+				 ORDER BY CASE ci.type WHEN 'phone' THEN 1 ELSE 2 END LIMIT 1),
 				CASE e.direction WHEN 'sent' THEN 'Me' ELSE 'Unknown' END) as sender,
 			COALESCE(e.content, '') as content,
 			e.direction,
@@ -552,7 +555,11 @@ func getEpisodes(db *sql.DB, threadID string, numEpisodes, eventsPerEpisode, min
 			e.reply_to,
 			(
 				SELECT GROUP_CONCAT(
-					COALESCE(mp.canonical_name, mp.display_name, mc.display_name, 'Unknown'), '|'
+					COALESCE(mp.canonical_name, mp.display_name, mc.display_name,
+						(SELECT mci.value FROM contact_identifiers mci 
+						 WHERE mci.contact_id = mc.id AND mci.type IN ('phone', 'email')
+						 ORDER BY CASE mci.type WHEN 'phone' THEN 1 ELSE 2 END LIMIT 1),
+						'Unknown'), '|'
 				)
 				FROM event_participants mem
 				LEFT JOIN contacts mc ON mem.contact_id = mc.id
@@ -653,6 +660,9 @@ func getEpisodesTimeGap(db *sql.DB, threadID string, numEpisodes int, gap time.D
 			e.id,
 			e.timestamp,
 			COALESCE(p.canonical_name, p.display_name, c.display_name,
+				(SELECT ci.value FROM contact_identifiers ci 
+				 WHERE ci.contact_id = c.id AND ci.type IN ('phone', 'email')
+				 ORDER BY CASE ci.type WHEN 'phone' THEN 1 ELSE 2 END LIMIT 1),
 				CASE e.direction WHEN 'sent' THEN 'Me' ELSE 'Unknown' END) as sender,
 			COALESCE(e.content, '') as content,
 			e.direction,
@@ -661,7 +671,11 @@ func getEpisodesTimeGap(db *sql.DB, threadID string, numEpisodes int, gap time.D
 			e.reply_to,
 			(
 				SELECT GROUP_CONCAT(
-					COALESCE(mp.canonical_name, mp.display_name, mc.display_name, 'Unknown'), '|'
+					COALESCE(mp.canonical_name, mp.display_name, mc.display_name,
+						(SELECT mci.value FROM contact_identifiers mci 
+						 WHERE mci.contact_id = mc.id AND mci.type IN ('phone', 'email')
+						 ORDER BY CASE mci.type WHEN 'phone' THEN 1 ELSE 2 END LIMIT 1),
+						'Unknown'), '|'
 				)
 				FROM event_participants mem
 				LEFT JOIN contacts mc ON mem.contact_id = mc.id

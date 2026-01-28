@@ -28,7 +28,11 @@ func QueryTimeline(db *sql.DB, opts TimelineOptions) ([]DayStats, error) {
 		SELECT
 			DATE(e.timestamp, 'unixepoch', 'localtime') as day,
 			COUNT(*) as total_events,
-			COALESCE(p.display_name, p.canonical_name, c.display_name, 'Unknown') as sender_name,
+			COALESCE(p.display_name, p.canonical_name, c.display_name,
+				(SELECT ci.value FROM contact_identifiers ci 
+				 WHERE ci.contact_id = c.id AND ci.type IN ('phone', 'email')
+				 ORDER BY CASE ci.type WHEN 'phone' THEN 1 ELSE 2 END LIMIT 1),
+				'Unknown') as sender_name,
 			e.channel,
 			e.direction,
 			COUNT(*) as count

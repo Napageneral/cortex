@@ -1021,14 +1021,21 @@ func (e *Engine) buildEpisodeText(ctx context.Context, episodeID string) (string
 			e.id,
 			e.content,
 			e.timestamp,
-			COALESCE(p.canonical_name, c.display_name),
+			COALESCE(p.canonical_name, c.display_name,
+				(SELECT ci.value FROM contact_identifiers ci 
+				 WHERE ci.contact_id = c.id AND ci.type IN ('phone', 'email')
+				 ORDER BY CASE ci.type WHEN 'phone' THEN 1 ELSE 2 END LIMIT 1)),
 			e.direction,
 			e.content_types,
 			e.metadata_json,
 			e.reply_to,
 			(
 				SELECT GROUP_CONCAT(
-					COALESCE(mp.canonical_name, mp.display_name, mc.display_name, 'Unknown'), '|'
+					COALESCE(mp.canonical_name, mp.display_name, mc.display_name,
+						(SELECT mci.value FROM contact_identifiers mci 
+						 WHERE mci.contact_id = mc.id AND mci.type IN ('phone', 'email')
+						 ORDER BY CASE mci.type WHEN 'phone' THEN 1 ELSE 2 END LIMIT 1),
+						'Unknown'), '|'
 				)
 				FROM event_participants mem
 				LEFT JOIN contacts mc ON mem.contact_id = mc.id
@@ -1103,6 +1110,13 @@ func (e *Engine) buildEpisodeText(ctx context.Context, episodeID string) (string
 			if replyTo.Valid && replyTo.String != "" {
 				if candidate, ok := messageSnippets[replyTo.String]; ok {
 					snippet = candidate
+				} else {
+					// Fallback: query database for the original message
+					var originalContent sql.NullString
+					_ = e.db.QueryRowContext(ctx, `SELECT content FROM events WHERE id = ?`, replyTo.String).Scan(&originalContent)
+					if originalContent.Valid {
+						snippet = reactionSnippet(originalContent.String)
+					}
 				}
 			}
 			if snippet != "" {
@@ -1316,6 +1330,13 @@ func (e *Engine) buildEpisodeTextMasked(ctx context.Context, episodeID string) (
 			if replyTo.Valid && replyTo.String != "" {
 				if candidate, ok := messageSnippets[replyTo.String]; ok {
 					snippet = candidate
+				} else {
+					// Fallback: query database for the original message
+					var originalContent sql.NullString
+					_ = e.db.QueryRowContext(ctx, `SELECT content FROM events WHERE id = ?`, replyTo.String).Scan(&originalContent)
+					if originalContent.Valid {
+						snippet = reactionSnippet(originalContent.String)
+					}
 				}
 			}
 			if snippet != "" {

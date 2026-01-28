@@ -52,6 +52,7 @@ func main() {
 				WHERE channel = 'imessage'
 				  AND content_types LIKE '%"membership"%'
 				  AND metadata_json LIKE '%"action":"added"%'
+				  AND metadata_json LIKE '%"other_contact_id"%'
 				ORDER BY timestamp DESC
 				LIMIT 1
 			`,
@@ -64,6 +65,7 @@ func main() {
 				WHERE channel = 'imessage'
 				  AND content_types LIKE '%"membership"%'
 				  AND metadata_json LIKE '%"action":"removed"%'
+				  AND metadata_json LIKE '%"other_contact_id"%'
 				ORDER BY timestamp DESC
 				LIMIT 1
 			`,
@@ -110,15 +112,28 @@ func main() {
 			continue
 		}
 
-		threadName, channel := getThreadInfo(db, threadID)
+		threadName, channel, isGroup := getThreadInfo(db, threadID)
 		participants := deriveParticipants(events)
+
+		// Fix thread name if it's a GUID, phone, or email - fall back to participant names
+		if looksLikeChatGUID(threadName) || threadName == "" || (!isGroup && looksLikePhoneOrEmail(threadName)) {
+			resolved := resolveThreadNameFromParticipants(db, threadID, participants, isGroup)
+			if resolved != "" {
+				threadName = resolved
+			}
+		}
+
+		threadType := "group"
+		if !isGroup {
+			threadType = "1:1"
+		}
 
 		fmt.Printf("=== %s ===\n", sample.label)
 		fmt.Printf("<EPISODE_CONTEXT>\n")
 		if threadName != "" {
-			fmt.Printf("Thread: %s (%s, group)\n", threadName, channel)
+			fmt.Printf("Thread: %s (%s, %s)\n", threadName, channel, threadType)
 		} else {
-			fmt.Printf("Thread: (%s, group)\n", channel)
+			fmt.Printf("Thread: (%s, %s)\n", channel, threadType)
 		}
 		if len(participants) > 0 {
 			fmt.Printf("Participants: %s\n", strings.Join(participants, ", "))
@@ -126,7 +141,7 @@ func main() {
 		fmt.Printf("</EPISODE_CONTEXT>\n\n")
 
 		fmt.Printf("<MESSAGES>\n")
-		fmt.Print(encodeEvents(events))
+		fmt.Print(encodeEvents(db, events))
 		fmt.Printf("</MESSAGES>\n\n")
 	}
 }
@@ -178,10 +193,17 @@ func fetchEvents(db *sql.DB, threadID string, centerTS int64, limit int, include
 			e.metadata_json,
 			e.reply_to,
 			COALESCE(p.canonical_name, p.display_name, c.display_name,
+				(SELECT ci.value FROM contact_identifiers ci 
+				 WHERE ci.contact_id = c.id AND ci.type IN ('phone', 'email')
+				 ORDER BY CASE ci.type WHEN 'phone' THEN 1 ELSE 2 END LIMIT 1),
 				CASE e.direction WHEN 'sent' THEN 'Me' ELSE 'Unknown' END) as sender,
 			(
 				SELECT GROUP_CONCAT(
-					COALESCE(mp.canonical_name, mp.display_name, mc.display_name, 'Unknown'), '|'
+					COALESCE(mp.canonical_name, mp.display_name, mc.display_name,
+						(SELECT mci.value FROM contact_identifiers mci 
+						 WHERE mci.contact_id = mc.id AND mci.type IN ('phone', 'email')
+						 ORDER BY CASE mci.type WHEN 'phone' THEN 1 ELSE 2 END LIMIT 1),
+						'Unknown'), '|'
 				)
 				FROM event_participants mem
 				LEFT JOIN contacts mc ON mem.contact_id = mc.id
@@ -242,7 +264,7 @@ func fetchEvents(db *sql.DB, threadID string, centerTS int64, limit int, include
 	return out, nil
 }
 
-func encodeEvents(events []eventRow) string {
+func encodeEvents(db *sql.DB, events []eventRow) string {
 	var sb strings.Builder
 	messageSnippets := map[string]string{}
 
@@ -255,9 +277,12 @@ func encodeEvents(events []eventRow) string {
 				continue
 			}
 			snippet := ""
-			if ev.ReplyTo.Valid {
+			if ev.ReplyTo.Valid && ev.ReplyTo.String != "" {
 				if candidate, ok := messageSnippets[ev.ReplyTo.String]; ok {
 					snippet = candidate
+				} else {
+					// Fallback: query database for the original message
+					snippet = lookupReplyToContent(db, ev.ReplyTo.String)
 				}
 			}
 			if snippet != "" {
@@ -269,7 +294,7 @@ func encodeEvents(events []eventRow) string {
 		}
 
 		if hasContentType(ev.ContentTypes, "membership") {
-			line := formatMembershipLine(ev.Sender, ev.MetadataJSON, ev.Members)
+			line := formatMembershipLine(db, ev.Sender, ev.MetadataJSON, ev.Members)
 			if line != "" {
 				sb.WriteString(line)
 				sb.WriteString("\n")
@@ -318,9 +343,10 @@ func encodeEvents(events []eventRow) string {
 	return sb.String()
 }
 
-func getThreadInfo(db *sql.DB, threadID string) (string, string) {
+func getThreadInfo(db *sql.DB, threadID string) (string, string, bool) {
 	var name, channel sql.NullString
 	_ = db.QueryRow(`SELECT name, channel FROM threads WHERE id = ?`, threadID).Scan(&name, &channel)
+	
 	threadName := ""
 	if name.Valid {
 		threadName = name.String
@@ -329,7 +355,45 @@ func getThreadInfo(db *sql.DB, threadID string) (string, string) {
 	if channel.Valid {
 		threadChannel = channel.String
 	}
-	return threadName, threadChannel
+	
+	// Derive isGroup by counting distinct senders in the thread
+	var senderCount int
+	_ = db.QueryRow(`
+		SELECT COUNT(DISTINCT ep.contact_id)
+		FROM event_participants ep
+		JOIN events e ON ep.event_id = e.id
+		WHERE e.thread_id = ? AND ep.role = 'sender'
+	`, threadID).Scan(&senderCount)
+	
+	// Also check if thread name looks like a phone number or email (usually 1:1)
+	isGroup := senderCount > 2 || (senderCount == 2 && !looksLikePhoneOrEmail(threadName))
+	
+	return threadName, threadChannel, isGroup
+}
+
+// looksLikePhoneOrEmail checks if a string looks like a phone number or email
+func looksLikePhoneOrEmail(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	// Check for phone-like patterns
+	if strings.HasPrefix(s, "+") || strings.HasPrefix(s, "1") {
+		digits := 0
+		for _, r := range s {
+			if r >= '0' && r <= '9' {
+				digits++
+			}
+		}
+		if digits >= 10 {
+			return true
+		}
+	}
+	// Check for email
+	if strings.Contains(s, "@") {
+		return true
+	}
+	return false
 }
 
 func deriveParticipants(events []eventRow) []string {
@@ -358,9 +422,17 @@ func hasContentType(contentTypesJSON, target string) bool {
 	return strings.Contains(contentTypesJSON, target)
 }
 
-func formatMembershipLine(actor string, metadataJSON sql.NullString, members sql.NullString) string {
+func formatMembershipLine(db *sql.DB, actor string, metadataJSON sql.NullString, members sql.NullString) string {
 	action := parseMembershipAction(metadataJSON)
 	memberNames := splitPipeList(members)
+
+	// If no member names from event_participants, try to get from metadata_json
+	if len(memberNames) == 0 && metadataJSON.Valid {
+		memberName := lookupMemberFromMetadata(db, metadataJSON.String)
+		if memberName != "" {
+			memberNames = []string{memberName}
+		}
+	}
 
 	actor = strings.TrimSpace(actor)
 	if actor == "Unknown" {
@@ -371,7 +443,7 @@ func formatMembershipLine(actor string, metadataJSON sql.NullString, members sql
 	switch action {
 	case "added":
 		if memberList == "" {
-			return "-> member joined"
+			return "-> unknown member joined"
 		}
 		if actor != "" {
 			return fmt.Sprintf("-> %s added %s", actor, memberList)
@@ -379,7 +451,7 @@ func formatMembershipLine(actor string, metadataJSON sql.NullString, members sql
 		return fmt.Sprintf("-> %s joined", memberList)
 	case "removed":
 		if memberList == "" {
-			return "-> member left"
+			return "-> unknown member left"
 		}
 		if actor != "" && actor != memberList {
 			return fmt.Sprintf("-> %s removed %s", actor, memberList)
@@ -440,4 +512,148 @@ func reactionSnippet(content string) string {
 		return string(runes[:maxRunes]) + "…"
 	}
 	return trimmed
+}
+
+// looksLikeChatGUID returns true if the string looks like an iMessage chat GUID
+func looksLikeChatGUID(s string) bool {
+	if strings.HasPrefix(s, "chat") && len(s) > 10 {
+		suffix := s[4:]
+		for _, r := range suffix {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// resolveThreadNameFromParticipants generates a thread name from participant names
+func resolveThreadNameFromParticipants(db *sql.DB, threadID string, participants []string, isGroup bool) string {
+	// For 1:1 chats, use the other participant's name
+	if !isGroup {
+		// Filter out "Me", "Tyler Brandt", and phone numbers to find the other person
+		for _, p := range participants {
+			p = strings.TrimSpace(p)
+			if p == "" || p == "Me" || p == "Unknown" {
+				continue
+			}
+			if strings.Contains(strings.ToLower(p), "tyler") {
+				continue
+			}
+			// Skip if it looks like a phone number
+			if looksLikePhoneOrEmail(p) {
+				continue
+			}
+			return p
+		}
+		// If we only have phone numbers, return the first participant that isn't Tyler
+		for _, p := range participants {
+			p = strings.TrimSpace(p)
+			if p != "" && p != "Me" && p != "Unknown" && !strings.Contains(strings.ToLower(p), "tyler") {
+				return p
+			}
+		}
+		if len(participants) > 0 {
+			return participants[0]
+		}
+	}
+
+	// For group chats with no name, try to get participant names from the thread
+	if isGroup {
+		// Query thread participants if we don't have them
+		if len(participants) == 0 {
+			rows, err := db.Query(`
+				SELECT DISTINCT COALESCE(p.canonical_name, p.display_name, c.display_name,
+					(SELECT ci.value FROM contact_identifiers ci 
+					 WHERE ci.contact_id = c.id AND ci.type IN ('phone', 'email')
+					 ORDER BY CASE ci.type WHEN 'phone' THEN 1 ELSE 2 END LIMIT 1))
+				FROM event_participants ep
+				JOIN events e ON ep.event_id = e.id
+				LEFT JOIN contacts c ON ep.contact_id = c.id
+				LEFT JOIN persons p ON p.id = (
+					SELECT person_id FROM person_contact_links pcl
+					WHERE pcl.contact_id = ep.contact_id
+					ORDER BY confidence DESC, last_seen_at DESC
+					LIMIT 1
+				)
+				WHERE e.thread_id = ? AND ep.role = 'sender'
+				LIMIT 10
+			`, threadID)
+			if err == nil {
+				defer rows.Close()
+				for rows.Next() {
+					var name sql.NullString
+					if rows.Scan(&name) == nil && name.Valid && name.String != "" {
+						participants = append(participants, name.String)
+					}
+				}
+			}
+		}
+
+		if len(participants) > 0 {
+			// Return up to 3 participants joined
+			if len(participants) > 3 {
+				return strings.Join(participants[:3], ", ") + "..."
+			}
+			return strings.Join(participants, ", ")
+		}
+	}
+
+	return ""
+}
+
+// lookupReplyToContent looks up the content of a message by event ID
+func lookupReplyToContent(db *sql.DB, eventID string) string {
+	var content sql.NullString
+	err := db.QueryRow(`SELECT content FROM events WHERE id = ?`, eventID).Scan(&content)
+	if err != nil || !content.Valid {
+		return ""
+	}
+	return reactionSnippet(content.String)
+}
+
+// lookupMemberFromMetadata extracts other_contact_id from metadata and looks up the name
+func lookupMemberFromMetadata(db *sql.DB, metadataJSON string) string {
+	// Parse other_contact_id from JSON
+	// Format: {"action":"added","other_handle_id":123,"other_contact_id":"uuid-here"}
+	var contactID string
+	
+	// Simple extraction - find "other_contact_id":"..."
+	idx := strings.Index(metadataJSON, `"other_contact_id":"`)
+	if idx == -1 {
+		return ""
+	}
+	start := idx + len(`"other_contact_id":"`)
+	end := strings.Index(metadataJSON[start:], `"`)
+	if end == -1 {
+		return ""
+	}
+	contactID = metadataJSON[start : start+end]
+	
+	if contactID == "" {
+		return ""
+	}
+	
+	// Look up contact name
+	var name sql.NullString
+	err := db.QueryRow(`
+		SELECT COALESCE(p.canonical_name, p.display_name, c.display_name,
+			(SELECT ci.value FROM contact_identifiers ci 
+			 WHERE ci.contact_id = c.id AND ci.type IN ('phone', 'email')
+			 ORDER BY CASE ci.type WHEN 'phone' THEN 1 ELSE 2 END LIMIT 1))
+		FROM contacts c
+		LEFT JOIN persons p ON p.id = (
+			SELECT person_id FROM person_contact_links pcl
+			WHERE pcl.contact_id = c.id
+			ORDER BY confidence DESC, last_seen_at DESC
+			LIMIT 1
+		)
+		WHERE c.id = ?
+	`, contactID).Scan(&name)
+	
+	if err != nil || !name.Valid {
+		return ""
+	}
+	return name.String
 }
