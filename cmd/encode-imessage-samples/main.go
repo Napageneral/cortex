@@ -345,7 +345,12 @@ func encodeEvents(db *sql.DB, events []eventRow) string {
 
 func getThreadInfo(db *sql.DB, threadID string) (string, string, bool) {
 	var name, channel sql.NullString
-	_ = db.QueryRow(`SELECT name, channel FROM threads WHERE id = ?`, threadID).Scan(&name, &channel)
+	var isGroup sql.NullInt64
+	err := db.QueryRow(`SELECT name, channel, is_group FROM threads WHERE id = ?`, threadID).Scan(&name, &channel, &isGroup)
+	if err != nil {
+		// Fallback if is_group column doesn't exist yet
+		_ = db.QueryRow(`SELECT name, channel FROM threads WHERE id = ?`, threadID).Scan(&name, &channel)
+	}
 	
 	threadName := ""
 	if name.Valid {
@@ -356,19 +361,10 @@ func getThreadInfo(db *sql.DB, threadID string) (string, string, bool) {
 		threadChannel = channel.String
 	}
 	
-	// Derive isGroup by counting distinct senders in the thread
-	var senderCount int
-	_ = db.QueryRow(`
-		SELECT COUNT(DISTINCT ep.contact_id)
-		FROM event_participants ep
-		JOIN events e ON ep.event_id = e.id
-		WHERE e.thread_id = ? AND ep.role = 'sender'
-	`, threadID).Scan(&senderCount)
+	// Use is_group from database (from Eve's sync of Apple's style column)
+	isGroupBool := isGroup.Valid && isGroup.Int64 == 1
 	
-	// Also check if thread name looks like a phone number or email (usually 1:1)
-	isGroup := senderCount > 2 || (senderCount == 2 && !looksLikePhoneOrEmail(threadName))
-	
-	return threadName, threadChannel, isGroup
+	return threadName, threadChannel, isGroupBool
 }
 
 // looksLikePhoneOrEmail checks if a string looks like a phone number or email

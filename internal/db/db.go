@@ -128,6 +128,10 @@ func ensureLegacyColumns(db *sql.DB) error {
 	if err := ensureColumn(db, "candidate_mentions", "source_episode_id", "TEXT REFERENCES episodes(id)"); err != nil {
 		return err
 	}
+	// Add is_group column to threads table (for group vs 1:1 chat detection)
+	if err := ensureColumn(db, "threads", "is_group", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	return nil
 }
 

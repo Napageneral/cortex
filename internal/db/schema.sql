@@ -175,6 +175,7 @@ CREATE TABLE IF NOT EXISTS threads (
     id TEXT PRIMARY KEY,
     channel TEXT NOT NULL,
     name TEXT,
+    is_group INTEGER NOT NULL DEFAULT 0,
     source_adapter TEXT NOT NULL,
     source_id TEXT NOT NULL,
     parent_thread_id TEXT REFERENCES threads(id),

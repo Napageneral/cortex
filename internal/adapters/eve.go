@@ -501,7 +501,8 @@ func (e *EveAdapter) syncChats(ctx context.Context, eveDB, cortexDB *sql.DB) (th
 			c.id,
 			c.chat_identifier,
 			c.chat_name,
-			c.service_name
+			c.service_name,
+			c.is_group
 		FROM chats c
 		ORDER BY c.id
 	`)
@@ -520,10 +521,11 @@ func (e *EveAdapter) syncChats(ctx context.Context, eveDB, cortexDB *sql.DB) (th
 	defer tx.Rollback()
 
 	stmtInsertThread, err := tx.Prepare(`
-		INSERT INTO threads (id, channel, name, source_adapter, source_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO threads (id, channel, name, is_group, source_adapter, source_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(source_adapter, source_id) DO UPDATE SET
 			name = excluded.name,
+			is_group = excluded.is_group,
 			updated_at = excluded.updated_at
 	`)
 	if err != nil {
@@ -535,8 +537,9 @@ func (e *EveAdapter) syncChats(ctx context.Context, eveDB, cortexDB *sql.DB) (th
 		var chatID int64
 		var chatIdentifier string
 		var chatName, serviceName sql.NullString
+		var isGroup bool
 
-		if err := rows.Scan(&chatID, &chatIdentifier, &chatName, &serviceName); err != nil {
+		if err := rows.Scan(&chatID, &chatIdentifier, &chatName, &serviceName, &isGroup); err != nil {
 			return threadsCreated, threadsUpdated, perf, fmt.Errorf("failed to scan chat row: %w", err)
 		}
 
@@ -551,11 +554,18 @@ func (e *EveAdapter) syncChats(ctx context.Context, eveDB, cortexDB *sql.DB) (th
 
 		now := time.Now().Unix()
 
+		// Convert bool to int for SQLite
+		isGroupInt := 0
+		if isGroup {
+			isGroupInt = 1
+		}
+
 		// Try to insert, or update if exists
 		res, err := stmtInsertThread.Exec(
 			threadID,
 			"imessage",
 			threadName,
+			isGroupInt,
 			e.Name(),
 			chatIdentifier,
 			now,
