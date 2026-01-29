@@ -71,6 +71,77 @@ func main() {
 			`,
 		},
 		{
+			label: "Membership Add (Coed Coven #1)",
+			query: `
+				SELECT e.id, e.thread_id, e.timestamp
+				FROM events e
+				JOIN threads t ON e.thread_id = t.id
+				WHERE e.channel = 'imessage'
+				  AND e.content_types LIKE '%"membership"%'
+				  AND e.metadata_json LIKE '%"action":"added"%'
+				  AND t.name = 'Coed Coven'
+				ORDER BY e.timestamp DESC
+				LIMIT 1 OFFSET 0
+			`,
+		},
+		{
+			label: "Membership Add (Coed Coven #2)",
+			query: `
+				SELECT e.id, e.thread_id, e.timestamp
+				FROM events e
+				JOIN threads t ON e.thread_id = t.id
+				WHERE e.channel = 'imessage'
+				  AND e.content_types LIKE '%"membership"%'
+				  AND e.metadata_json LIKE '%"action":"added"%'
+				  AND t.name = 'Coed Coven'
+				ORDER BY e.timestamp DESC
+				LIMIT 1 OFFSET 10
+			`,
+		},
+		{
+			label: "Membership Add (Coed Coven #3)",
+			query: `
+				SELECT e.id, e.thread_id, e.timestamp
+				FROM events e
+				JOIN threads t ON e.thread_id = t.id
+				WHERE e.channel = 'imessage'
+				  AND e.content_types LIKE '%"membership"%'
+				  AND e.metadata_json LIKE '%"action":"added"%'
+				  AND t.name = 'Coed Coven'
+				ORDER BY e.timestamp DESC
+				LIMIT 1 OFFSET 20
+			`,
+		},
+		{
+			label: "Membership Removed (UFC 324)",
+			query: `
+				SELECT e.id, e.thread_id, e.timestamp
+				FROM events e
+				JOIN threads t ON e.thread_id = t.id
+				WHERE e.channel = 'imessage'
+				  AND e.content_types LIKE '%"membership"%'
+				  AND e.metadata_json LIKE '%"action":"removed"%'
+				  AND t.name = 'UFC 324'
+				ORDER BY e.timestamp DESC
+				LIMIT 1
+			`,
+		},
+		{
+			label: "Membership Leave (no member)",
+			query: `
+				SELECT e.id, e.thread_id, e.timestamp
+				FROM events e
+				LEFT JOIN event_participants epm
+				  ON epm.event_id = e.id AND epm.role = 'member'
+				WHERE e.channel = 'imessage'
+				  AND e.content_types LIKE '%"membership"%'
+				  AND e.metadata_json LIKE '%"action":"removed"%'
+				  AND epm.event_id IS NULL
+				ORDER BY e.timestamp DESC
+				LIMIT 1
+			`,
+		},
+		{
 			label: "Reaction",
 			query: `
 				SELECT id, thread_id, timestamp
@@ -90,6 +161,65 @@ func main() {
 				JOIN attachments a ON a.event_id = e.id
 				WHERE e.channel = 'imessage'
 				  AND a.media_type = 'image'
+				ORDER BY e.timestamp DESC
+				LIMIT 1
+			`,
+		},
+		{
+			label: "Video Attachment",
+			query: `
+				SELECT e.id, e.thread_id, e.timestamp
+				FROM events e
+				JOIN attachments a ON a.event_id = e.id
+				WHERE e.channel = 'imessage'
+				  AND a.media_type = 'video'
+				  AND e.content_types NOT LIKE '%"membership"%'
+				  AND e.content_types NOT LIKE '%"reaction"%'
+				ORDER BY e.timestamp DESC
+				LIMIT 1
+			`,
+		},
+		{
+			label: "Audio Attachment",
+			query: `
+				SELECT e.id, e.thread_id, e.timestamp
+				FROM events e
+				JOIN attachments a ON a.event_id = e.id
+				WHERE e.channel = 'imessage'
+				  AND a.media_type = 'audio'
+				  AND e.content_types NOT LIKE '%"membership"%'
+				  AND e.content_types NOT LIKE '%"reaction"%'
+				ORDER BY e.timestamp DESC
+				LIMIT 1
+			`,
+		},
+		{
+			label: "Sticker Attachment",
+			query: `
+				SELECT e.id, e.thread_id, e.timestamp
+				FROM events e
+				JOIN attachments a ON a.event_id = e.id
+				WHERE e.channel = 'imessage'
+				  AND a.media_type = 'sticker'
+				  AND e.content_types NOT LIKE '%"membership"%'
+				  AND e.content_types NOT LIKE '%"reaction"%'
+				ORDER BY e.timestamp DESC
+				LIMIT 1
+			`,
+		},
+		{
+			label: "File Attachment",
+			query: `
+				SELECT e.id, e.thread_id, e.timestamp
+				FROM events e
+				JOIN attachments a ON a.event_id = e.id
+				WHERE e.channel = 'imessage'
+				  AND a.media_type = 'document'
+				  AND a.filename IS NOT NULL
+				  AND a.filename != ''
+				  AND a.filename NOT LIKE '%.pluginpayloadattachment'
+				  AND e.content_types NOT LIKE '%"membership"%'
+				  AND e.content_types NOT LIKE '%"reaction"%'
 				ORDER BY e.timestamp DESC
 				LIMIT 1
 			`,
